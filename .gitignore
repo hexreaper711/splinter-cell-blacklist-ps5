@@ -1,0 +1,18 @@
+# Your own game files: never committed.
+disc-files/*
+!disc-files/README.md
+game/
+
+# Your own development notes, logs and scratch tools.
+dev/
+
+# Build output (most of it lives on Docker volumes).
+out/
+generated/
+dist/
+
+.DS_Store
+__pycache__/
+
+# The SDK's Windows-only PowerPC test tools (~120 MB, not used by the PS5 build).
+thirdparty/rexglue-sdk/tools/binutils/
