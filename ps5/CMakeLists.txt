@@ -28,6 +28,23 @@ set(REXSDK_DIR "/work/rexglue-sdk" CACHE PATH "ReXGlue source tree (branch ps5-p
 add_subdirectory("${REXSDK_DIR}" rexglue-sdk)
 
 set(SCB_GENERATED "${SCB_ROOT}/generated/default")
+
+# Without the game (the GitHub check, which has no default.xex): the SDK, the Xenos plugin and the
+# launcher's files that don't need the recompiled code, compiled for the PS5 but not linked.
+option(SCB_WITHOUT_GAME "Build only what doesn't need the recompiled game" OFF)
+if(SCB_WITHOUT_GAME)
+    add_library(blacklist_check STATIC
+        ${SCB_ROOT}/src/disc_launcher.cpp
+        ${SCB_ROOT}/src/hd_texture_pack.cpp
+        ${SCB_ROOT}/src/launcher_settings.cpp
+    )
+    target_include_directories(blacklist_check PRIVATE ${SCB_ROOT} ${SCB_ROOT}/src
+        $<TARGET_PROPERTY:imgui,INTERFACE_INCLUDE_DIRECTORIES>)
+    target_link_libraries(blacklist_check PRIVATE rex::runtime rexgpu-xenos)
+    rexglue_apply_target_settings(blacklist_check)
+    return()
+endif()
+
 if(NOT EXISTS "${SCB_GENERATED}/sources.cmake")
     message(FATAL_ERROR "No recompiled code in ${SCB_GENERATED}: run "
                         "`rexglue codegen blacklist_manifest.toml` in ${SCB_ROOT} first")

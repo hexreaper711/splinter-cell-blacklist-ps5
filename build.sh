@@ -6,8 +6,11 @@
 #   ./build.sh --clean          the game build and the recompiled code again (not the dependencies)
 #   ./build.sh --with-discs     also copy your discs (disc-files/disc1, disc2) into the app folder
 #                               dist/PPSA90827, for your own PS5 (the zip stays without them)
-#   ./build.sh --version 1.2.0  the version to stamp (default: git describe, e.g. v0.1.0 for a
-#                               commit tagged v0.1.0, v0.1.0-3-gabc1234 three commits later)
+#   ./build.sh --check          only what doesn't need your disc: the dependencies, the rexglue
+#                               tool, and the SDK and launcher compiled for the PS5 (the GitHub
+#                               check). No zip.
+#   ./build.sh --version 1.2.0  the version to stamp (default: the VERSION.txt file's, "-modified"
+#                               added when files differ from the last commit)
 # Needs Docker, the submodules (git submodule update --init --recursive) and your own disc 1's
 # default.xex in disc-files/disc1/. The first run builds the dependencies (PS5 payload SDK, RADV,
 # the rexglue tool) and takes a few hours on a Mac; later runs only rebuild what changed.
@@ -20,18 +23,19 @@ title_id=PPSA90827
 
 step() { printf '\n==> %s\n' "$*"; }
 
-clean=0 with_discs=0 version=
+clean=0 with_discs=0 check=0 version=
 while (( $# )); do
     case $1 in
         --clean) clean=1 ;;
         --with-discs) with_discs=1 ;;
+        --check) check=1 ;;
         --version) version=${2:?--version needs a value, e.g. 1.2.0}; version=v${version#v}; shift ;;
         *) echo "unknown option $1 (see the top of build.sh)" >&2; exit 2 ;;
     esac
     shift
 done
 if [[ -z $version ]]; then
-    version=$(git describe --tags --always 2>/dev/null || echo dev)
+    version=v$(tr -d '[:space:]' < VERSION.txt)
     # (submodules don't count: the build itself patches FFmpeg and fills ps5-plume-triangle)
     [[ -z $(git status --porcelain --ignore-submodules=all 2>/dev/null) ]] || version+=-modified
 fi
@@ -43,7 +47,7 @@ if (( clean )); then
 fi
 
 xex=disc-files/disc1/default.xex
-if [[ ! -f $xex ]]; then
+if (( ! check )) && [[ ! -f $xex ]]; then
     echo "No $xex: copy default.xex from your own extracted disc 1 there (README.md)." >&2
     exit 2
 fi
@@ -61,12 +65,21 @@ if [[ ! -f $ffmpeg/config_ps5_x86_64.h ]]; then
     git -C "$ffmpeg" apply "$here/patches/ffmpeg-ps5-config.patch"
 fi
 
-step "PS5 payload SDK, RADV and the app runtime (ps5-plume-triangle, once)"
-"${dev[@]}" bash -c '
-    set -e
-    cd /work/ps5-plume-triangle
-    [[ -f .deps/native/radv-release/lib/libvulkan_radeon.ps5.a ]] || make deps
-    [[ -x build/host/ps5-native-tool && -f build/obj/app_crt.o ]] || make app'
+if (( check )); then
+    step "PS5 payload SDK (ps5-plume-triangle, once)"
+    "${dev[@]}" bash -c '
+        set -e
+        cd /work/ps5-plume-triangle
+        [[ -x .deps/native/ps5-payload-sdk/bin/prospero-clang ]] ||
+            bash tools/setup-native-dependencies.sh'
+else
+    step "PS5 payload SDK, RADV and the app runtime (ps5-plume-triangle, once)"
+    "${dev[@]}" bash -c '
+        set -e
+        cd /work/ps5-plume-triangle
+        [[ -f .deps/native/radv-release/lib/libvulkan_radeon.ps5.a ]] || make deps
+        [[ -x build/host/ps5-native-tool && -f build/obj/app_crt.o ]] || make app'
+fi
 
 step "The rexglue tool for Linux (once)"
 "${dev[@]}" bash -c '
@@ -74,8 +87,15 @@ step "The rexglue tool for Linux (once)"
     [[ -x $REXGLUE ]] && exit 0
     cd /work/rexglue-sdk
     cmake --preset linux-amd64 -DCMAKE_C_COMPILER=clang-19 -DCMAKE_CXX_COMPILER=clang++-19 \
-        -DREXGLUE_ENABLE_TRACY=OFF
+        -DREXGLUE_ENABLE_TRACY=OFF -DCMAKE_C_COMPILER_LAUNCHER=ccache \
+        -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
     cmake --build --preset linux-amd64-release --target rexglue'
+
+if (( check )); then
+    step "Compiling the SDK and the launcher for the PS5 (without the game)"
+    "${dev[@]}" bash ps5/build.sh --check
+    exit
+fi
 
 step "Recompiling the game's code from default.xex (once, 10-15 minutes)"
 "${dev[@]}" bash -c '

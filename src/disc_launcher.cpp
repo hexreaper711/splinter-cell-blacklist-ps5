@@ -460,6 +460,15 @@ void DiscLauncherDialog::OnDraw(ImGuiIO& io) {
                   "No disc installed: see game/README.txt in the app folder");
   }
 
+  // The app's version, bottom right on the hints' line.
+  if (!look_.version.empty()) {
+    const float version_size = 36.0f * s;
+    const float w =
+        text->CalcTextSizeA(version_size, FLT_MAX, 0.0f, look_.version.c_str()).x;
+    draw->AddText(text, version_size, ImVec2(screen.x - 120.0f * s - w, hint_y + 6.0f * s),
+                  IM_COL32(150, 156, 162, 255), look_.version.c_str());
+  }
+
   // Fading in from black.
   const float fade = 1.0f - std::min(t / 0.8f, 1.0f);
   if (fade > 0.0f) {

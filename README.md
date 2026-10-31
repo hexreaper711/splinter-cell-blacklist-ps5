@@ -67,17 +67,21 @@ runs only rebuild what changed. `./build.sh --clean` rebuilds the game (not the 
 
 ### Versions
 
-The zip is named after the version, which comes from git: on a commit tagged `v0.1.0` it's
-`splinter-cell-blacklist-ps5-v0.1.0.zip`, three commits later `...-v0.1.0-3-g<commit>.zip`, and
-`-modified` is added when the files differ from the commit. `./build.sh --version 0.2.0` sets
-the version itself. Inside the app, `VERSION.txt` records it, and an `x.y.z` version also
-becomes the app's content version in `sce_sys/param.json`.
+The version is in the [`VERSION.txt`](VERSION.txt) file (`0.1.0`). The zip is named after it
+(`splinter-cell-blacklist-ps5-v0.1.0.zip`), the launcher shows it at the bottom right, the app
+keeps it in `VERSION.txt`, and it becomes the app's content version in `sce_sys/param.json`.
+`-modified` is added when your files differ from the last commit. `./build.sh --version 0.2.0`
+overrides it for one build. Older zips in `dist/` are kept.
 
-```bash
-git tag v0.1.0 && ./build.sh
-```
+To release a new version, change `VERSION.txt` (say to `0.2.0`), commit and push to `main`. The
+GitHub check then tags `v0.2.0` and creates a release with the changes since the last one. A
+release has no files: everyone builds the zip from their own disc.
 
-Older zips in `dist/` are kept.
+### Checking without a disc
+
+`./build.sh --check` builds everything that doesn't need the game: the dependencies, the
+`rexglue` tool, and the SDK and launcher compiled for the PS5. GitHub runs it on every push and
+pull request ([.github/workflows/build.yml](.github/workflows/build.yml)).
 
 ### Your discs in the package
 

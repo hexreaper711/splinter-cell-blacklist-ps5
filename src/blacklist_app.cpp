@@ -41,6 +41,17 @@ std::filesystem::path LauncherFolder() {
   return rex::filesystem::GetExecutableFolder() / "launcher";
 }
 
+// The first line of the app's VERSION.txt (build.sh writes it: "v0.1.0"), or nothing.
+std::string AppVersion() {
+  std::ifstream file(rex::filesystem::GetExecutableFolder() / "VERSION.txt");
+  std::string line;
+  std::getline(file, line);
+  while (!line.empty() && (line.back() == '\r' || line.back() == ' ')) {
+    line.pop_back();
+  }
+  return line;
+}
+
 std::filesystem::path DiscFolder(uint32_t disc) {
   return rex::filesystem::GetExecutableFolder() / "game" / ("disc" + std::to_string(disc));
 }
@@ -198,6 +209,8 @@ std::optional<rex::PathConfig> BlacklistApp::OnFinalizePaths(
   LauncherLook look;
   look.display_font = launcher_display_font_;
   look.text_font = launcher_text_font_;
+  look.version = AppVersion();
+  REXLOG_INFO("Launcher: version {}", look.version.empty() ? "unknown" : look.version);
   const auto picture = LauncherFolder() / "launcher-background.png";
   std::ifstream file(picture, std::ios::binary);
   const std::vector<uint8_t> png((std::istreambuf_iterator<char>(file)),

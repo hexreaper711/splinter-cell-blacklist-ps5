@@ -1,0 +1,97 @@
+# On every push to main (and pull request): builds and checks everything that doesn't need the
+# game - the build container, the PS5 payload SDK, the Linux rexglue tool, and the SDK, Xenos
+# plugin and launcher compiled for the PS5 (./build.sh --check). GitHub never has the game's
+# default.xex, so it builds no app and no zip: build those yourself with ./build.sh.
+#
+# When a push to main changes VERSION.txt to a version that has no tag yet, it also tags it (v0.2.0)
+# and creates a GitHub release with the changes since the last one - without any files.
+name: Build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    name: Check (no game)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 300
+    env:
+      SCB_STORAGE_DIR: ${{ github.workspace }}/../storage
+    steps:
+      - name: Make room
+        # The runner starts with ~14 GB free; the SDK build needs more.
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+          df -h /
+
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Versions of the dependencies
+        id: deps
+        run: |
+          echo "plume=$(git rev-parse HEAD:thirdparty/ps5-plume-triangle)" >> "$GITHUB_OUTPUT"
+
+      - name: Restore the PS5 payload SDK
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.SCB_STORAGE_DIR }}/plume-deps
+          key: plume-deps-${{ steps.deps.outputs.plume }}-${{ hashFiles('docker/Dockerfile') }}
+
+      - name: Restore the compiler cache
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.SCB_STORAGE_DIR }}/cache
+          key: ccache-${{ github.sha }}
+          restore-keys: ccache-
+
+      - name: Build and check
+        env:
+          CCACHE_MAXSIZE: 3G
+        run: ./build.sh --check
+
+      - name: Compiler cache use
+        if: always()
+        run: ./dev.sh bash -c 'ccache --show-stats 2>/dev/null | head -20 || true'
+
+  release:
+    name: Release (when VERSION.txt changes)
+    needs: check
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Tag and release a new version
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          version=v$(tr -d '[:space:]' < VERSION.txt)
+          if git rev-parse -q --verify "refs/tags/$version" >/dev/null; then
+            echo "$version is already tagged: no new release (bump VERSION.txt to make one)."
+            exit 0
+          fi
+          cat > notes.md <<EOF
+          No files come with this release: build it from your own disc 1's \`default.xex\`.
+
+          \`\`\`bash
+          git clone --recursive --branch $version https://github.com/${GITHUB_REPOSITORY}.git
+          \`\`\`
+
+          Then copy \`default.xex\` to \`disc-files/disc1/\` and run \`./build.sh\`: it makes
+          \`dist/splinter-cell-blacklist-ps5-$version.zip\` (see the README).
+          EOF
+          gh release create "$version" --target "$GITHUB_SHA" --title "$version" \
+            --notes-file notes.md --generate-notes

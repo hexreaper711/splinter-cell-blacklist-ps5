@@ -33,6 +33,7 @@ struct LauncherLook {
   ImFont* text_font = nullptr;                       // the rest
   rex::ui::ImmediateTexture* background = nullptr;  // full screen, cropped to fill
   std::string note;                                  // a line above the buttons, if any
+  std::string version;                               // bottom right ("v0.1.0"), if any
 };
 
 // Work done after a disc is picked, before its game starts, shown with a progress bar (the HD

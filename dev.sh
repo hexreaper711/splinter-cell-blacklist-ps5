@@ -6,7 +6,8 @@
 # at /work/rexglue-sdk and ps5-plume-triangle (the PS5 payload SDK, RADV, the app CRT and the
 # signer) at /work/ps5-plume-triangle. Dependencies and build trees live on Docker volumes
 # (scbps5-*): a Linux filesystem, faster than the shared Mac folder, where tar and git archive
-# also break.
+# also break. With SCB_STORAGE_DIR set they are folders in it instead (the GitHub check caches
+# them between runs).
 set -euo pipefail
 
 here=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
@@ -18,14 +19,22 @@ if ! docker image inspect "$image" >/dev/null 2>&1; then
     docker build --platform linux/amd64 -t "$image" "$here/docker"
 fi
 
-mounts=(-v "$here:/work/scb" -v scbps5-cache:/cache
+store() {  # a Docker volume, or a folder in SCB_STORAGE_DIR
+    if [[ -n ${SCB_STORAGE_DIR:-} ]]; then
+        mkdir -p "$SCB_STORAGE_DIR/$1"
+        echo "$SCB_STORAGE_DIR/$1"
+    else
+        echo "scbps5-$1"
+    fi
+}
+mounts=(-v "$here:/work/scb" -v "$(store cache):/cache"
         -v "$sdk:/work/rexglue-sdk"
-        -v scbps5-rexsdk-out:/work/rexglue-sdk/out
+        -v "$(store rexsdk-out):/work/rexglue-sdk/out"
         -v "$plume:/work/ps5-plume-triangle"
-        -v scbps5-plume-deps:/work/ps5-plume-triangle/.deps
-        -v scbps5-plume-build:/work/ps5-plume-triangle/build
-        -v scbps5-out:/work/scb/out
-        -v scbps5-generated:/work/scb/generated)
+        -v "$(store plume-deps):/work/ps5-plume-triangle/.deps"
+        -v "$(store plume-build):/work/ps5-plume-triangle/build"
+        -v "$(store out):/work/scb/out"
+        -v "$(store generated):/work/scb/generated")
 
 # The Linux rexglue tool (codegen), built from the same SDK by build.sh.
 tool=/work/rexglue-sdk/out/linux-amd64/Release
