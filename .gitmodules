@@ -1,6 +1,7 @@
 [submodule "thirdparty/ps5-plume-triangle"]
 	path = thirdparty/ps5-plume-triangle
 	url = https://github.com/Nazky/ps5-plume-triangle.git
+	ignore = dirty
 [submodule "thirdparty/rexglue-sdk/thirdparty/libmspack"]
 	path = thirdparty/rexglue-sdk/thirdparty/libmspack
 	url = https://github.com/kyz/libmspack.git
@@ -10,6 +11,7 @@
 [submodule "thirdparty/rexglue-sdk/thirdparty/FFmpeg"]
 	path = thirdparty/rexglue-sdk/thirdparty/FFmpeg
 	url = https://github.com/wmarti/FFmpeg.git
+	ignore = dirty
 [submodule "thirdparty/rexglue-sdk/thirdparty/tomlplusplus"]
 	path = thirdparty/rexglue-sdk/thirdparty/tomlplusplus
 	url = https://github.com/marzer/tomlplusplus.git
