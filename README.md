@@ -60,10 +60,26 @@ It does every step and skips the ones already done:
 3. builds the Linux `rexglue` tool from the SDK (once);
 4. translates the game's code from your `default.xex` (once, 10-15 minutes);
 5. builds and signs the PS5 app;
-6. packs it into **`dist/PPSA90827.zip`**.
+6. packs it into **`dist/splinter-cell-blacklist-ps5-<version>.zip`**.
 
 The first run takes a few hours on a Mac, because the dependencies are built from source. Later
 runs only rebuild what changed. `./build.sh --clean` rebuilds the game (not the dependencies).
+
+### Versions
+
+The zip is named after the version, which comes from git: on a commit tagged `v0.1.0` it's
+`splinter-cell-blacklist-ps5-v0.1.0.zip`, three commits later `...-v0.1.0-3-g<commit>.zip`, and
+`-modified` is added when the files differ from the commit. `./build.sh --version 0.2.0` sets
+the version itself. Inside the app, `VERSION.txt` records it, and an `x.y.z` version also
+becomes the app's content version in `sce_sys/param.json`.
+
+```bash
+git tag v0.1.0 && ./build.sh
+```
+
+Older zips in `dist/` are kept.
+
+### Your discs in the package
 
 `./build.sh --with-discs` also copies your own discs from `disc-files/disc1` and `disc2` into
 the app folder `dist/PPSA90827`, so it's ready to copy to your PS5 as it is. The zip never
@@ -73,7 +89,8 @@ contains them.
 
 ## Installing
 
-1. Unzip `dist/PPSA90827.zip` and copy the `PPSA90827` folder to `/data/homebrew/` on the PS5.
+1. Unzip `dist/splinter-cell-blacklist-ps5-<version>.zip` and copy the `PPSA90827` folder in it
+   to `/data/homebrew/` on the PS5.
 2. Copy **your own** extracted discs into it, each disc's whole root (with its `default.xex`),
    leaving out `$SystemUpdate`:
 

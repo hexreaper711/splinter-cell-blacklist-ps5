@@ -1,10 +1,13 @@
 #!/usr/bin/env bash
-# Builds Splinter Cell: Blacklist for PS5 from scratch into dist/PPSA90827.zip, a homebrew app
-# folder without any game files (you add your own discs on the PS5, see README.md).
-#   ./build.sh               every step that isn't done yet
-#   ./build.sh --clean       the game build and the recompiled code again (not the dependencies)
-#   ./build.sh --with-discs  also copy your discs (disc-files/disc1, disc2) into the app folder
-#                            dist/PPSA90827, for your own PS5 (the zip stays without them)
+# Builds Splinter Cell: Blacklist for PS5 from scratch into
+# dist/splinter-cell-blacklist-ps5-<version>.zip, a homebrew app folder without any game files
+# (you add your own discs on the PS5, see README.md).
+#   ./build.sh                  every step that isn't done yet
+#   ./build.sh --clean          the game build and the recompiled code again (not the dependencies)
+#   ./build.sh --with-discs     also copy your discs (disc-files/disc1, disc2) into the app folder
+#                               dist/PPSA90827, for your own PS5 (the zip stays without them)
+#   ./build.sh --version 1.2.0  the version to stamp (default: git describe, e.g. v0.1.0 for a
+#                               commit tagged v0.1.0, v0.1.0-3-gabc1234 three commits later)
 # Needs Docker, the submodules (git submodule update --init --recursive) and your own disc 1's
 # default.xex in disc-files/disc1/. The first run builds the dependencies (PS5 payload SDK, RADV,
 # the rexglue tool) and takes a few hours on a Mac; later runs only rebuild what changed.
@@ -17,14 +20,22 @@ title_id=PPSA90827
 
 step() { printf '\n==> %s\n' "$*"; }
 
-clean=0 with_discs=0
-for arg in "$@"; do
-    case $arg in
+clean=0 with_discs=0 version=
+while (( $# )); do
+    case $1 in
         --clean) clean=1 ;;
         --with-discs) with_discs=1 ;;
-        *) echo "unknown option $arg (see the top of build.sh)" >&2; exit 2 ;;
+        --version) version=${2:?--version needs a value, e.g. 1.2.0}; version=v${version#v}; shift ;;
+        *) echo "unknown option $1 (see the top of build.sh)" >&2; exit 2 ;;
     esac
+    shift
 done
+if [[ -z $version ]]; then
+    version=$(git describe --tags --always 2>/dev/null || echo dev)
+    # (submodules don't count: the build itself patches FFmpeg and fills ps5-plume-triangle)
+    [[ -z $(git status --porcelain --ignore-submodules=all 2>/dev/null) ]] || version+=-modified
+fi
+zip_name=splinter-cell-blacklist-ps5-$version.zip
 
 if (( clean )); then
     step "Removing the game build and the recompiled code"
@@ -75,12 +86,30 @@ step "Recompiling the game's code from default.xex (once, 10-15 minutes)"
 step "Building the PS5 app"
 "${dev[@]}" bash ps5/build.sh
 
-step "Packaging dist/$title_id.zip"
-rm -rf "dist/$title_id" "dist/$title_id.zip"
+step "Packaging dist/$zip_name"
+rm -rf "dist/$title_id" "dist/$zip_name"
 mkdir -p dist
 "${dev[@]}" bash -c "cp -r out/ps5/ps5-app/$title_id dist/"
-(cd dist && zip -qr "$title_id.zip" "$title_id")
-echo "dist/$title_id.zip: copy its $title_id folder to /data/homebrew on the PS5, then add your discs (README.md)."
+# The version: in VERSION.txt, and as the app's content version when it's x.y.z (00.010.000 is
+# 0.10.0's).
+printf '%s\nbuilt %s from %s\n' "$version" "$(date -u +%Y-%m-%d)" \
+    "$(git rev-parse --short HEAD 2>/dev/null || echo '?')" > "dist/$title_id/VERSION.txt"
+if [[ $version =~ ^v([0-9]+)\.([0-9]+)\.([0-9]+)$ ]]; then
+    content_version=$(printf '%02d.%03d.%03d' "$((10#${BASH_REMATCH[1]}))" \
+        "$((10#${BASH_REMATCH[2]}))" "$((10#${BASH_REMATCH[3]}))")
+    python3 -I - "dist/$title_id/sce_sys/param.json" "$content_version" <<'PY'
+import json, sys
+path, content_version = sys.argv[1], sys.argv[2]
+with open(path) as f:
+    param = json.load(f)
+param["contentVersion"] = content_version
+with open(path, "w") as f:
+    json.dump(param, f, indent=2)
+    f.write("\n")
+PY
+fi
+(cd dist && zip -qr "$zip_name" "$title_id")
+echo "dist/$zip_name: copy its $title_id folder to /data/homebrew on the PS5, then add your discs (README.md)."
 
 if (( with_discs )); then
     step "Copying your discs into dist/$title_id/game (not into the zip)"
