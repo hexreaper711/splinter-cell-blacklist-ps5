@@ -33,6 +33,10 @@ std::atomic<uint64_t> max_gap_us[kGapCount];
 
 namespace {
 std::atomic<uint64_t> last_event_tick[kGapCount];
+// Frames by how long they stayed (the gap to the next swap) in 60 Hz vblanks: 1, 2, 3, 4 or
+// more. A steady 30 fps game has nearly all at 2; uneven pacing (2s mixed with 1s and 3s) feels
+// like stutter even at 30 fps on average.
+std::atomic<uint64_t> swap_gap_vblanks[4];
 }  // namespace
 
 void NoteMax(Gap gap, uint64_t us) {
@@ -46,7 +50,14 @@ void NoteEvent(Gap gap) {
   const uint64_t now = rex::chrono::Clock::QueryHostTickCount();
   const uint64_t previous = last_event_tick[gap].exchange(now, std::memory_order_relaxed);
   if (previous) {
-    NoteMax(gap, (now - previous) * 1000000 / rex::chrono::Clock::QueryHostTickFrequency());
+    const uint64_t us = (now - previous) * 1000000 / rex::chrono::Clock::QueryHostTickFrequency();
+    NoteMax(gap, us);
+    if (gap == kSwapGap) {
+      // (rounded to the nearest vblank, 16.7 ms)
+      const uint64_t vblanks = (us + 8333) / 16667;
+      swap_gap_vblanks[std::min<uint64_t>(std::max<uint64_t>(vblanks, 1), 4) - 1].fetch_add(
+          1, std::memory_order_relaxed);
+    }
   }
 }
 WaitSlot wait_slots[kWaitSlots];
@@ -674,6 +685,10 @@ void StartMonitor() {
       for (int i = 0; i < kGapCount; ++i) {
         gaps[i] = max_gap_us[i].exchange(0, std::memory_order_relaxed);
       }
+      uint64_t paced[4];
+      for (int i = 0; i < 4; ++i) {
+        paced[i] = swap_gap_vblanks[i].exchange(0, std::memory_order_relaxed);
+      }
       const double seconds = double(now - last_ms) / 1000.0;
       last_ms = now;
       if (!REXCVAR_GET(ps5_stats)) {
@@ -688,6 +703,8 @@ void StartMonitor() {
           gaps[kVblankGap] / 1000.0, d[kAudioFrames] / seconds / 187.5 * 100.0, d[kPipelines],
           d[kPipelineUs] / 1000.0, d[kGpuWaitUs] / 10000.0 / seconds, d[kSleeps] / seconds,
           d[kSleeps] ? double(d[kSleepOverUs]) / double(d[kSleeps]) : 0.0, gaps[kSleepOver] / 1000.0);
+      REXLOG_INFO("ps5 pacing: frames lasting 1 vblank {}, 2 {}, 3 {}, 4+ {}", paced[0], paced[1],
+                  paced[2], paced[3]);
     }
   }).detach();
 }

@@ -95,10 +95,12 @@ struct GpuFrameReport {
   uint64_t run_indices = 0;
   uint32_t draws = 0;
   uint32_t resolves = 0;
-  // The resolve being done (its registers, for the picture's file name), and whether this run
-  // already wrote the pictures of a frame (only the first report's: tens of MB).
+  // The resolve being done (its registers, for the picture's file name), and how many reports
+  // of this run wrote their pictures (tens of MB each: the first kPictureReports, each in
+  // logs/frame/<n>/).
+  static constexpr uint32_t kPictureReports = 4;
   uint32_t copy_control = 0, copy_dest_base = 0, copy_dest_info = 0, copy_dest_pitch = 0;
-  bool pictures_written = false;
+  uint32_t picture_reports = 0;
   bool writing_pictures = false;
 
   void EndRun() {
@@ -149,74 +151,6 @@ struct GpuFrameReport {
     for (const draw_util::MemExportRange& range : ranges) {
       REXGPU_INFO("gpu frame: memexport {}{} {:08X} +{:X}", vertex ? "vs" : "", pixel ? "ps" : "",
                   range.base_address_dwords << 2, range.size_bytes);
-    }
-  }
-
-  // The rest of a memexport draw's input, to redo it on a PC (where its points land, so which
-  // byte each writes): the raster registers, all float, bool and loop constants, the index buffer
-  // and the vertex shader's vertex buffers (guest words, byte-swapped as the guest sees them).
-  void MemexportInput(const RegisterFile& regs, const Shader* vertex_shader,
-                      const rex::memory::Memory& memory) {
-    REXGPU_INFO(
-        "gpu frame: meminput regs vtx_cntl {:08X} vte {:08X} point_size {:08X} point_minmax {:08X} "
-        "window_offset {:08X} sc_mode {:08X} clip {:08X} vport {:08X} {:08X} {:08X} {:08X} {:08X} "
-        "{:08X} indx_offset {:08X} initiator {:08X} dma {:08X} {:08X}",
-        regs[XE_GPU_REG_PA_SU_VTX_CNTL], regs[XE_GPU_REG_PA_CL_VTE_CNTL],
-        regs[XE_GPU_REG_PA_SU_POINT_SIZE], regs[XE_GPU_REG_PA_SU_POINT_MINMAX],
-        regs[XE_GPU_REG_PA_SC_WINDOW_OFFSET], regs[XE_GPU_REG_PA_SU_SC_MODE_CNTL],
-        regs[XE_GPU_REG_PA_CL_CLIP_CNTL], regs[XE_GPU_REG_PA_CL_VPORT_XSCALE],
-        regs[XE_GPU_REG_PA_CL_VPORT_XOFFSET], regs[XE_GPU_REG_PA_CL_VPORT_YSCALE],
-        regs[XE_GPU_REG_PA_CL_VPORT_YOFFSET], regs[XE_GPU_REG_PA_CL_VPORT_ZSCALE],
-        regs[XE_GPU_REG_PA_CL_VPORT_ZOFFSET], regs[XE_GPU_REG_VGT_INDX_OFFSET],
-        regs[XE_GPU_REG_VGT_DRAW_INITIATOR], regs[XE_GPU_REG_VGT_DMA_BASE],
-        regs[XE_GPU_REG_VGT_DMA_SIZE]);
-    auto words = [](const uint32_t* data, uint32_t count) {
-      std::string text;
-      for (uint32_t i = 0; i < count; ++i) {
-        fmt::format_to(std::back_inserter(text), " {:08X}", data[i]);
-      }
-      return text;
-    };
-    // c0-c255 the vertex shader's, c256-c511 the pixel shader's, 8 a line.
-    for (uint32_t c = 0; c < 512; c += 8) {
-      REXGPU_INFO("gpu frame: meminput c{}{}", c,
-                  words(&regs.values[XE_GPU_REG_SHADER_CONSTANT_000_X + 4 * c], 32));
-    }
-    REXGPU_INFO("gpu frame: meminput bool{}",
-                words(&regs.values[XE_GPU_REG_SHADER_CONSTANT_BOOL_000_031], 8));
-    REXGPU_INFO("gpu frame: meminput loop{}",
-                words(&regs.values[XE_GPU_REG_SHADER_CONSTANT_LOOP_00], 32));
-    auto dump = [&](const std::string& name, uint32_t address, uint32_t length, bool swap) {
-      const uint8_t* data = memory.TranslatePhysical<const uint8_t*>(address);
-      if (!data) {
-        return;
-      }
-      for (uint32_t line = 0; line < length / 4; line += 64) {
-        std::string text;
-        for (uint32_t i = line; i < std::min(length / 4, line + 64); ++i) {
-          uint32_t word;
-          std::memcpy(&word, data + 4 * i, 4);
-          fmt::format_to(std::back_inserter(text), " {:08X}", swap ? rex::byte_swap(word) : word);
-        }
-        REXGPU_INFO("gpu frame: meminput {} {:08X}{}", name, address + 4 * line, text);
-      }
-    };
-    if (regs.Get<reg::VGT_DRAW_INITIATOR>().source_select == xenos::SourceSelect::kDMA) {
-      // Raw (the index endianness is in VGT_DMA_SIZE), at most 64 KB.
-      dump("index", regs[XE_GPU_REG_VGT_DMA_BASE] & ~3u,
-           std::min(uint32_t(65536), ((regs[XE_GPU_REG_VGT_DMA_SIZE] & 0xFFFFFF) * 4 + 3) & ~3u),
-           false);
-    }
-    if (!vertex_shader) {
-      return;
-    }
-    for (const Shader::VertexBinding& binding : vertex_shader->vertex_bindings()) {
-      xenos::xe_gpu_vertex_fetch_t fetch = regs.GetVertexFetch(binding.fetch_constant);
-      REXGPU_INFO("gpu frame: meminput vf{} stride {} {:08X} {:08X}", binding.fetch_constant,
-                  binding.stride_words, fetch.dword_0, fetch.dword_1);
-      // At most 256 KB a buffer.
-      dump(fmt::format("vf{}", binding.fetch_constant), fetch.address << 2,
-           std::min(uint32_t(262144), uint32_t(fetch.size) << 2), true);
     }
   }
 
@@ -280,9 +214,10 @@ struct GpuFrameReport {
     // tools/ps5_gpu_images.py turns them into pictures.
     if (writing_pictures && (length >= (1u << 20) || (copy_control & 7) == 4)) {
       std::error_code ec;
-      std::filesystem::create_directories("/app0/logs/frame", ec);
+      const std::string folder = fmt::format("/app0/logs/frame/{}", picture_reports);
+      std::filesystem::create_directories(folder, ec);
       const std::string path = fmt::format(
-          "/app0/logs/frame/{:03}_a{:08X}_n{:X}_d{:08X}_i{:08X}_p{:08X}_c{:08X}.raw", resolves,
+          "{}/{:03}_a{:08X}_n{:X}_d{:08X}_i{:08X}_p{:08X}_c{:08X}.raw", folder, resolves,
           address, length, copy_dest_base, copy_dest_info, copy_dest_pitch, copy_control);
       if (FILE* file = std::fopen(path.c_str(), "wb")) {
         std::fwrite(data, 1, length, file);
@@ -298,15 +233,17 @@ struct GpuFrameReport {
       REXGPU_INFO("gpu frame: swap {:08X} {}x{} - end ({} draws, {} resolves)", frontbuffer,
                   width, height, draws, resolves);
       recording = false;
-      if (writing_pictures) {
-        writing_pictures = false;
-        pictures_written = true;
-      }
+      writing_pictures = false;
     } else if (rex::ps5diag::TakeGpuFrameReportRequest()) {
-      REXGPU_INFO("gpu frame: start");
       recording = true;
       draws = resolves = 0;
-      writing_pictures = !pictures_written;
+      writing_pictures = picture_reports < kPictureReports;
+      if (writing_pictures) {
+        ++picture_reports;
+      }
+      REXGPU_INFO("gpu frame: start{}",
+                  writing_pictures ? fmt::format(" (pictures in logs/frame/{})", picture_reports)
+                                   : std::string());
     }
   }
 };
@@ -3936,7 +3873,6 @@ bool VulkanCommandProcessor::IssueDraw(xenos::PrimitiveType prim_type, uint32_t 
     gpu_frame_report.Draw(regs, uint32_t(prim_type), index_count, vertex_shader, pixel_shader);
     if (!memexport_ranges_.empty()) {
       gpu_frame_report.Memexport(memexport_ranges_, memexport_used_vertex, memexport_used_pixel);
-      gpu_frame_report.MemexportInput(regs, vertex_shader, *memory_);
     }
   }
 #endif
