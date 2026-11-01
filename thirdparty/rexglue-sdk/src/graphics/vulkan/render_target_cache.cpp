@@ -413,6 +413,11 @@ bool VulkanRenderTargetCache::Initialize(uint32_t shared_memory_binding_count) {
       return false;
     }
   }
+  // [ps5 port] The path actually used (the setting can be overridden by the checks above).
+  REXGPU_INFO("VulkanRenderTargetCache: {} path (render_target_path_vulkan = \"{}\")",
+              path_ == Path::kPixelShaderInterlock ? "fragment shader interlock (FSI)"
+                                                   : "host render targets",
+              REXCVAR_GET(render_target_path_vulkan));
 
   // Descriptor set layouts.
   VkDescriptorSetLayoutBinding descriptor_set_layout_bindings[2];

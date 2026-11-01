@@ -135,6 +135,10 @@ async_shader_compilation = false
 # The game's texture fetch constants often have the "invalid" type (thousands a minute in the
 # story): skipped, those textures drew black, the 3D world a black screen with only its lights.
 gpu_allow_invalid_fetch_constants = true
+# Run screen-space draws' vertex shaders on the CPU to find how much of the EDRAM they use (Xenia's
+# default). Without it a 4x MSAA stencil clear (the silent kill's effect) claimed the whole EDRAM
+# and wiped the G-buffer: the world went black but for its lights, whole or half the screen.
+execute_unclipped_draw_vs_on_cpu = true
 # EDRAM through fragment shader interlock (Broken Bond needed it for black 3D in its story mode):
 # render_target_path_vulkan = "fsi"
 EOF
