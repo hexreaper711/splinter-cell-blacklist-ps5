@@ -73,9 +73,10 @@ keeps it in `VERSION.txt`, and it becomes the app's content version in `sce_sys/
 `-modified` is added when your files differ from the last commit. `./build.sh --version 0.2.0`
 overrides it for one build. Older zips in `dist/` are kept.
 
-To release a new version, change `VERSION.txt` (say to `0.2.0`), commit and push to `main`. The
-GitHub check then tags `v0.2.0` and creates a release with the changes since the last one. A
-release has no files: everyone builds the zip from their own disc.
+To release a new version, change `VERSION.txt` (say to `0.2.0`), commit and push to `main`. After
+the GitHub check, a self-hosted runner on the owner's own Mac (label `splinter-cell`, with the disc
+folder in the repository variable `DISC_FILES_DIR`) builds the app and creates the `v0.2.0` release
+with the zip and the changes since the last one. The releases are as private as this repository.
 
 ### Checking without a disc
 

@@ -1,10 +1,10 @@
 # On every push to main (and pull request): builds and checks everything that doesn't need the
 # game - the build container, the PS5 payload SDK, the Linux rexglue tool, and the SDK, Xenos
-# plugin and launcher compiled for the PS5 (./build.sh --check). GitHub never has the game's
-# default.xex, so it builds no app and no zip: build those yourself with ./build.sh.
+# plugin and launcher compiled for the PS5 (./build.sh --check). GitHub's own machines never have
+# the game's default.xex, so the check builds no app.
 #
-# When a push to main changes VERSION.txt to a version that has no tag yet, it also tags it (v0.2.0)
-# and creates a GitHub release with the changes since the last one - without any files.
+# When a push to main changes VERSION.txt to a version that has no tag yet, the owner's Mac builds
+# the app and tags it (v0.2.0) as a release with the zip and the changes since the last one.
 name: Build
 
 on:
@@ -62,36 +62,53 @@ jobs:
         if: always()
         run: ./dev.sh bash -c 'ccache --show-stats 2>/dev/null | head -20 || true'
 
+  # Built on the owner's own Mac (a self-hosted runner labelled splinter-cell), the only place with
+  # the disc: its default.xex comes from the folder in the repository variable DISC_FILES_DIR. The
+  # release, with the zip, is as private as this repository.
   release:
     name: Release (when VERSION.txt changes)
     needs: check
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    runs-on: ubuntu-24.04
+    runs-on: [self-hosted, splinter-cell]
+    timeout-minutes: 600
     permissions:
       contents: write
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          submodules: recursive
 
-      - name: Tag and release a new version
-        env:
-          GH_TOKEN: ${{ github.token }}
+      - name: New version?
+        id: version
         run: |
           version=v$(tr -d '[:space:]' < VERSION.txt)
+          echo "version=$version" >> "$GITHUB_OUTPUT"
           if git rev-parse -q --verify "refs/tags/$version" >/dev/null; then
             echo "$version is already tagged: no new release (bump VERSION.txt to make one)."
-            exit 0
+            echo "new=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "new=true" >> "$GITHUB_OUTPUT"
           fi
+
+      - name: Build the app
+        if: steps.version.outputs.new == 'true'
+        env:
+          DISC_FILES_DIR: ${{ vars.DISC_FILES_DIR }}
+        run: |
+          mkdir -p disc-files/disc1
+          cp "$DISC_FILES_DIR/disc1/default.xex" disc-files/disc1/
+          ./build.sh
+
+      - name: Release with the zip
+        if: steps.version.outputs.new == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
           cat > notes.md <<EOF
-          No files come with this release: build it from your own disc 1's \`default.xex\`.
-
-          \`\`\`bash
-          git clone --recursive --branch $version https://github.com/${GITHUB_REPOSITORY}.git
-          \`\`\`
-
-          Then copy \`default.xex\` to \`disc-files/disc1/\` and run \`./build.sh\`: it makes
-          \`dist/splinter-cell-blacklist-ps5-$version.zip\` (see the README).
+          Install: unzip, copy the \`PPSA90827\` folder to \`/data/homebrew/\` on the PS5, then
+          your own discs into its \`game/disc1/\` and \`game/disc2/\` (see the README).
           EOF
-          gh release create "$version" --target "$GITHUB_SHA" --title "$version" \
-            --notes-file notes.md --generate-notes
+          gh release create "$VERSION" "dist/splinter-cell-blacklist-ps5-$VERSION.zip" \
+            --target "$GITHUB_SHA" --title "$VERSION" --notes-file notes.md --generate-notes
