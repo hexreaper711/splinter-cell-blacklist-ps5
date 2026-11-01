@@ -695,6 +695,26 @@ bool RenderTargetCache::Update(bool is_rasterization_done,
     return true;
   }
 
+  if (log_ownership) {
+    // (only what changed: a render target newly bound in its slot, or copying tiles)
+    for (uint32_t i = 0; i < edram_bases_sorted_count; ++i) {
+      const uint32_t rt_bit_index = edram_bases_sorted[i].second;
+      const RenderTargetKey& rt_key = rt_keys[rt_bit_index];
+      if (last_update_transfers_[rt_bit_index].empty() &&
+          last_update_used_render_targets_[rt_bit_index] == rts[rt_bit_index]) {
+        continue;
+      }
+      std::string transfers;
+      for (const Transfer& transfer : last_update_transfers_[rt_bit_index]) {
+        fmt::format_to(std::back_inserter(transfers), " [{}..{} from {}]", transfer.start_tiles,
+                       transfer.end_tiles, transfer.source->key().GetDebugName());
+      }
+      REXGPU_INFO("gpu frame: rt {} {} claims {}..{} (height {}){}", rt_bit_index ? "color" : "depth",
+                  rt_key.GetDebugName(), rt_key.base_tiles, rt_key.base_tiles + rt_lengths_tiles[i],
+                  height_used, transfers);
+    }
+  }
+
   // If everything succeeded, update the used render targets.
   for (uint32_t i = 0; i < 1 + xenos::kMaxColorRenderTargets; ++i) {
     last_update_used_render_targets_[i] =
@@ -921,6 +941,13 @@ void RenderTargetCache::GetResolveCopyDispatchesToDump(
     std::vector<ResolveCopyDumpRectangle>& rectangles_out,
     std::vector<ResolveCopyDispatch>& dispatches_out) const {
   GetResolveCopyRectanglesToDump(base, row_length, rows, pitch, rectangles_out);
+  if (log_ownership) {
+    for (const ResolveCopyDumpRectangle& rectangle : rectangles_out) {
+      REXGPU_INFO("gpu frame: resolve reads {} rows {}+{} (EDRAM {} <{}t>, row length {})",
+                  rectangle.render_target->key().GetDebugName(), rectangle.row_first,
+                  rectangle.rows, base, pitch, row_length);
+    }
+  }
   dispatches_out.clear();
   for (uint32_t rectangle_index = 0; rectangle_index < uint32_t(rectangles_out.size());
        ++rectangle_index) {

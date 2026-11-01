@@ -88,7 +88,11 @@ def main() -> int:
                 values.append((v[0], v[1], 0.0))
             else:
                 values.append(tuple(float(b) for b in p[1:4]))  # (byte order: try and see)
-        top = max((max(v) for v in values), default=0.0) or 1.0
+        # Scaled to the 99th percentile, not the maximum: a few bright lights would leave
+        # everything else in an HDR picture black.
+        brightest = sorted(max(v) for v in values)
+        top = (brightest[len(brightest) * 99 // 100] if brightest else 0.0) or \
+            (brightest[-1] if brightest else 0.0) or 1.0
         rgb = bytes(min(255, int(255 * c / top)) for v in values for c in v)
         kind = "depth" if depth else NAMES.get(fmt, f"fmt{fmt}")
         name = f"{seq:03}_{kind}_{width}x{height}_d{dest:08X}.png"

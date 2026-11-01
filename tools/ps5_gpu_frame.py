@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import re
+import struct
 from pathlib import Path
 
 COLOR_RT = {0: "8888", 1: "8888_GAMMA", 2: "2_10_10_10", 3: "2_10_10_10_FLOAT(7e3)", 4: "16_16",
@@ -77,9 +78,16 @@ def main() -> int:
             blends = [int(x, 16) for x in f[22:26]]
             texs = []
             i = 26
-            while i + 6 < len(f):
+            while i + 6 < len(f) and not f[i].startswith("pc"):
                 texs.append((f[i], [int(x, 16) for x in f[i + 1:i + 7]]))
                 i += 7
+            # Then the pixel shader's float constants, if logged: pc<n> and 4 words.
+            consts = []
+            while i + 4 < len(f) and f[i].startswith("pc"):
+                words = [struct.unpack(">f", int(x, 16).to_bytes(4, "big"))[0]
+                         for x in f[i + 1:i + 5]]
+                consts.append(f"c{f[i][2:]}=({', '.join(f'{w:g}' for w in words)})")
+                i += 5
             targets = [rt(colors[n], surface) for n in range(4) if (mask >> (4 * n)) & 15]
             z = ""
             if depthctl & 2:
@@ -94,6 +102,8 @@ def main() -> int:
                 if name not in shown:
                     shown.add(name)
                     print(f"      {name}: {tex(d)}")
+            if consts:
+                print(f"      {' '.join(consts)}")
             continue
         if "gpu frame: resolved" in line:
             print("        data " + line.split("gpu frame: resolved ")[1])

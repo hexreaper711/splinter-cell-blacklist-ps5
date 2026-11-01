@@ -17,6 +17,7 @@
 #include <filesystem>
 #include <iterator>
 #include <mutex>
+#include <set>
 #include <string>
 #include <string_view>
 #include <tuple>
@@ -102,6 +103,7 @@ struct GpuFrameReport {
   uint32_t copy_control = 0, copy_dest_base = 0, copy_dest_info = 0, copy_dest_pitch = 0;
   uint32_t picture_reports = 0;
   bool writing_pictures = false;
+  std::set<uint32_t> saved_textures;  // (this report's)
 
   void EndRun() {
     if (run_draws) {
@@ -113,7 +115,8 @@ struct GpuFrameReport {
   }
 
   void Draw(const RegisterFile& regs, uint32_t prim_type, uint32_t index_count,
-            const Shader* vertex_shader, const Shader* pixel_shader) {
+            const Shader* vertex_shader, const Shader* pixel_shader,
+            const rex::memory::Memory& memory) {
     std::string state = fmt::format(
         "prim {} vs {:016X} ps {:016X} surface {:08X} mode {:08X} color {:08X} {:08X} {:08X} "
         "{:08X} mask {:08X} depth {:08X} depthctl {:08X} blend {:08X} {:08X} {:08X} {:08X}",
@@ -134,6 +137,35 @@ struct GpuFrameReport {
         fmt::format_to(std::back_inserter(state), " {}tex{} {:08X} {:08X} {:08X} {:08X} {:08X} {:08X}",
                        shader == vertex_shader ? 'v' : 'p', binding.fetch_constant, fetch.dword_0,
                        fetch.dword_1, fetch.dword_2, fetch.dword_3, fetch.dword_4, fetch.dword_5);
+        // With the pictures: the texture's first 64 KB as the guest has it, once a report.
+        const uint32_t base = fetch.dword_1 & ~0xFFFu;
+        if (writing_pictures && shader == pixel_shader && saved_textures.insert(base).second) {
+          if (const uint8_t* data = memory.TranslatePhysical<const uint8_t*>(base)) {
+            std::error_code ec;
+            const std::string folder = fmt::format("/app0/logs/frame/{}", picture_reports);
+            std::filesystem::create_directories(folder, ec);
+            if (FILE* file = std::fopen(fmt::format("{}/tex_{:08X}_{:08X}_{:08X}.raw", folder,
+                                                    base, fetch.dword_1, fetch.dword_2)
+                                            .c_str(),
+                                        "wb")) {
+              std::fwrite(data, 1, 65536, file);
+              std::fclose(file);
+            }
+          }
+        }
+      }
+    }
+    // The pixel shader's float constants, when it reads only a few: pc<n> and its 4 words.
+    if (pixel_shader) {
+      const Shader::ConstantRegisterMap& map = pixel_shader->constant_register_map();
+      if (!map.float_dynamic_addressing && map.float_count <= 8) {
+        for (uint32_t i = 0; i < 256; ++i) {
+          if (map.float_bitmap[i >> 6] & (uint64_t(1) << (i & 63))) {
+            const uint32_t* c = &regs.values[XE_GPU_REG_SHADER_CONSTANT_256_X + 4 * i];
+            fmt::format_to(std::back_inserter(state), " pc{} {:08X} {:08X} {:08X} {:08X}", i,
+                           c[0], c[1], c[2], c[3]);
+          }
+        }
       }
     }
     if (state != run) {
@@ -238,7 +270,13 @@ struct GpuFrameReport {
       recording = true;
       draws = resolves = 0;
       writing_pictures = picture_reports < kPictureReports;
+      saved_textures.clear();
       if (writing_pictures) {
+        if (!picture_reports) {
+          // (the run's first: an earlier run's pictures would mix in with its folders' names)
+          std::error_code ec;
+          std::filesystem::remove_all("/app0/logs/frame", ec);
+        }
         ++picture_reports;
       }
       REXGPU_INFO("gpu frame: start{}",
@@ -3870,7 +3908,8 @@ bool VulkanCommandProcessor::IssueDraw(xenos::PrimitiveType prim_type, uint32_t 
   reg::RB_DEPTHCONTROL normalized_depth_control = draw_util::GetNormalizedDepthControl(regs);
 #if REX_PLATFORM_PS5
   if (gpu_frame_report.recording) {
-    gpu_frame_report.Draw(regs, uint32_t(prim_type), index_count, vertex_shader, pixel_shader);
+    gpu_frame_report.Draw(regs, uint32_t(prim_type), index_count, vertex_shader, pixel_shader,
+                          *memory_);
     if (!memexport_ranges_.empty()) {
       gpu_frame_report.Memexport(memexport_ranges_, memexport_used_vertex, memexport_used_pixel);
     }
@@ -4025,6 +4064,10 @@ bool VulkanCommandProcessor::IssueDraw(xenos::PrimitiveType prim_type, uint32_t 
       pixel_shader ? draw_util::GetNormalizedColorMask(regs, pixel_shader->writes_color_targets())
                    : 0;
 
+#if REX_PLATFORM_PS5
+  // (the render target cache logs its ownership changes into the frame report)
+  render_target_cache_->log_ownership = gpu_frame_report.recording;
+#endif
   // Update the textures before most other work in the submission because
   // samplers depend on this (and in case of sampler overflow in a submission,
   // submissions must be split) - may perform dispatches and copying.
@@ -4591,6 +4634,7 @@ bool VulkanCommandProcessor::IssueCopy() {
   if (gpu_frame_report.recording) {
     gpu_frame_report.Resolve(*register_file_);
   }
+  render_target_cache_->log_ownership = gpu_frame_report.recording;
 #endif
 
   if (!BeginSubmission(true)) {
@@ -4598,6 +4642,12 @@ bool VulkanCommandProcessor::IssueCopy() {
   }
 
   ReadbackResolveMode readback_mode = GetReadbackResolveMode(REXCVAR_GET(vulkan_readback_resolve));
+#if REX_PLATFORM_PS5
+  // A GPU frame report reads every resolve of its frame back (its pictures), whatever the mode.
+  if (gpu_frame_report.recording) {
+    readback_mode = ReadbackResolveMode::kFull;
+  }
+#endif
   if (readback_mode == ReadbackResolveMode::kDisabled) {
     uint32_t written_address, written_length;
     return render_target_cache_->Resolve(*memory_, *shared_memory_, *texture_cache_,
@@ -4627,6 +4677,12 @@ bool VulkanCommandProcessor::IssueCopy_ReadbackResolvePath() {
   }
 
   ReadbackResolveMode readback_mode = GetReadbackResolveMode(REXCVAR_GET(vulkan_readback_resolve));
+#if REX_PLATFORM_PS5
+  // A GPU frame report reads every resolve of its frame back (its pictures), whatever the mode.
+  if (gpu_frame_report.recording) {
+    readback_mode = ReadbackResolveMode::kFull;
+  }
+#endif
   if (readback_mode == ReadbackResolveMode::kDisabled) {
     return true;
   }

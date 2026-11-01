@@ -32,6 +32,10 @@ namespace rex::graphics {
 
 class RenderTargetCache {
  public:
+  // [ps5 port] While a GPU frame report records: log which render target claims which EDRAM
+  // tiles at each update (and what it copies them from), and which ones each resolve reads.
+  bool log_ownership = false;
+
   // High-level emulation logic implementation path.
   enum class Path {
     // Approximate method using conventional host render targets and copying
