@@ -11,7 +11,14 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <cstdio>
+#include <cstring>
+#include <filesystem>
+#include <string>
+#include <unordered_map>
+#include <unordered_set>
 #include <utility>
+#include <vector>
 
 #include <rex/assert.h>
 #include <rex/chrono/clock.h>
@@ -25,6 +32,18 @@
 #include <rex/graphics/xenos.h>
 #include <rex/logging.h>
 #include <rex/math.h>
+
+// [ps5 port] Texture replacement, for small compressed (DXT) textures (128x128 or less: icons,
+// button prompts): matched by a hash (FNV-1a 64) of their bytes as the guest has them (tiled, its
+// endianness), replaced by bytes of the same size before they reach the GPU. texture_dump_dir
+// collects the originals.
+REXCVAR_DEFINE_STRING(texture_dump_dir, "", "GPU",
+                      "Save each small texture (128x128 or less) the game loads, once, to this folder "
+                      "as <hash>_<width>x<height>_f<format>.raw (the guest's bytes)")
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+REXCVAR_DEFINE_STRING(texture_replace_dir, "", "GPU",
+                      "Folder of <hash>.raw files: a small texture whose bytes have that hash gets "
+                      "the file's bytes (the same size) instead");
 
 REXCVAR_DEFINE_INT32(texture_cache_memory_limit_render_to_texture, 24, "GPU",
                      "Texture cache memory limit for render-to-texture (MB)")
@@ -366,6 +385,77 @@ uint32_t TextureCache::GuestToHostSwizzle(uint32_t guest_swizzle, uint32_t host_
   return host_swizzle;
 }
 
+namespace {
+// FNV-1a 64 of the texture's bytes: what the replacement files are named after (simple enough to
+// compute in tools/xbox_texture.py too).
+uint64_t ReplacementHash(const uint8_t* data, uint32_t size) {
+  uint64_t hash = 0xCBF29CE484222325ull;
+  for (uint32_t i = 0; i < size; ++i) {
+    hash = (hash ^ data[i]) * 0x100000001B3ull;
+  }
+  return hash;
+}
+
+// [ps5 port] Dumps and replaces small textures (see texture_dump_dir / texture_replace_dir).
+void DumpOrReplaceSmallTexture(memory::Memory& memory, uint32_t address, uint32_t size,
+                               uint32_t width, uint32_t height, xenos::TextureFormat format) {
+  static bool replacements_loaded = false;
+  static std::unordered_map<uint64_t, std::filesystem::path> replacements;
+  static std::unordered_set<uint64_t> dumped;
+  if (!replacements_loaded) {
+    replacements_loaded = true;
+    const std::string dir = REXCVAR_GET(texture_replace_dir);
+    std::error_code ec;
+    if (!dir.empty()) {
+      for (const auto& entry : std::filesystem::directory_iterator(dir, ec)) {
+        const std::string stem = entry.path().stem().string();
+        if (entry.path().extension() == ".raw" && stem.size() >= 16) {
+          replacements.emplace(std::stoull(stem.substr(0, 16), nullptr, 16), entry.path());
+        }
+      }
+      REXGPU_INFO("Texture replacement: {} textures in {}", replacements.size(), dir);
+    }
+  }
+  const std::string dump_dir = REXCVAR_GET(texture_dump_dir);
+  if (replacements.empty() && dump_dir.empty()) {
+    return;
+  }
+  uint8_t* data = memory.TranslatePhysical(address);
+  if (!data || !size) {
+    return;
+  }
+  const uint64_t hash = ReplacementHash(data, size);
+  if (!dump_dir.empty() && dumped.insert(hash).second) {
+    std::error_code ec;
+    std::filesystem::create_directories(dump_dir, ec);
+    const std::string path = fmt::format("{}/{:016X}_{}x{}_f{}.raw", dump_dir, hash, width, height,
+                                         uint32_t(format));
+    if (FILE* file = std::fopen(path.c_str(), "wb")) {
+      std::fwrite(data, 1, size, file);
+      std::fclose(file);
+    }
+  }
+  auto it = replacements.find(hash);
+  if (it == replacements.end()) {
+    return;
+  }
+  std::vector<uint8_t> replacement;
+  if (FILE* file = std::fopen(it->second.string().c_str(), "rb")) {
+    replacement.resize(size + 1);
+    replacement.resize(std::fread(replacement.data(), 1, size + 1, file));
+    std::fclose(file);
+  }
+  if (replacement.size() != size) {
+    REXGPU_WARN("Texture replacement: {} is {} bytes, the texture {}", it->second.string(),
+                replacement.size(), size);
+    return;
+  }
+  // Into guest memory, before the upload of the outdated range: the write watches of the pages
+  // see it as any other write.
+  std::memcpy(data, replacement.data(), size);
+}
+}  // namespace
+
 bool TextureCache::PrepareTextureLoad(Texture& texture, PendingTextureLoad& pending_load_out,
                                       PendingSharedMemoryRange* pending_ranges_out,
                                       size_t& pending_range_count_out) {
@@ -395,6 +485,18 @@ bool TextureCache::PrepareTextureLoad(Texture& texture, PendingTextureLoad& pend
   pending_range_count_out = 0;
 
   TextureKey texture_key = texture.key();
+  // (only compressed art: the GPU's own small results, the game's lighting probes and the like,
+  // change every frame - hashing and dumping them each time stalled the game)
+  if (base_outdated && !texture_key.scaled_resolve &&
+      texture_key.dimension == xenos::DataDimension::k2DOrStacked &&
+      texture_key.width_minus_1 < 128 && texture_key.height_minus_1 < 128 &&
+      (texture_key.format == xenos::TextureFormat::k_DXT1 ||
+       texture_key.format == xenos::TextureFormat::k_DXT2_3 ||
+       texture_key.format == xenos::TextureFormat::k_DXT4_5)) {
+    DumpOrReplaceSmallTexture(shared_memory().guest_memory(), texture_key.base_page << 12,
+                              texture.GetGuestBaseSize(), texture_key.width_minus_1 + 1,
+                              texture_key.height_minus_1 + 1, texture_key.format);
+  }
   if (base_outdated) {
     PendingSharedMemoryRange pending_range;
     pending_range.start = texture_key.base_page << 12;

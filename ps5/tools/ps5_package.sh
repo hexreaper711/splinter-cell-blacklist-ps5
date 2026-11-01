@@ -82,39 +82,22 @@ rm -rf -- "$app"
 mkdir -p "$app/sce_sys" "$app/sce_module" "$app/game/disc1" "$app/game/disc2"
 "$tool" self --sign --in "$stage/build/eboot.elf" --out "$app/eboot.bin" --magic 0x1D3D154F
 cp "$tri/runtime/libc.prx" "$app/sce_module/libc.prx"
-cat > "$app/sce_sys/param.json" <<EOF
-{
-  "ageLevel": { "default": 0 },
-  "applicationCategoryType": 0,
-  "applicationDrmType": "free",
-  "attribute": 0,
-  "attribute2": 0,
-  "attribute3": 0,
-  "conceptId": "${title_id:4}",
-  "contentBadgeType": 1,
-  "contentId": "UP9000-${title_id}_00-SCELLBLACKLIST00",
-  "contentVersion": "00.010.000",
-  "downloadDataSize": 256,
-  "gameIntent": { "permittedIntents": [ { "intentType": "launchActivity" } ] },
-  "localizedParameters": {
-    "defaultLanguage": "en-US",
-    "en-US": { "titleName": "Splinter Cell: Blacklist" }
-  },
-  "masterVersion": "01.00",
-  "pubtools": { "creationDate": "$(date -u +%Y-%m-%d) 00:00:00", "loudnessSnd0": "-28.00", "toolVersion": "2.00" },
-  "requiredSystemSoftwareVersion": "0x0000000000000000",
-  "sdkVersion": "0x0000000000000000",
-  "titleId": "${title_id}",
-  "versionFileUri": ""
-}
-EOF
+# The app's parameters: ps5/package/sce_sys/param.json (copied with the rest of sce_sys below),
+# its creation date set to today's. (build.sh sets contentVersion from VERSION.txt.)
 # The home screen icon and anything else under ps5/package/sce_sys.
 if [[ -d $ps5dir/package/sce_sys ]]; then
     cp -r "$ps5dir/package/sce_sys/." "$app/sce_sys/"
 fi
+sed -i "s/\"creationDate\": \"[^\"]*\"/\"creationDate\": \"$(date -u +%Y-%m-%d) 00:00:00\"/" \
+    "$app/sce_sys/param.json"
 # The launcher's background and font (src/disc_launcher.h).
 mkdir -p "$app/launcher"
 cp "$ps5dir/assets/launcher-background.png" "$ps5dir/assets/Roboto-Medium.ttf" "$app/launcher/"
+# Replacement textures (PlayStation button prompts), <hash>.raw: texture_replace_dir.
+mkdir -p "$app/launcher/textures"
+if compgen -G "$ps5dir/assets/textures/*.raw" > /dev/null; then
+    cp "$ps5dir"/assets/textures/*.raw "$app/launcher/textures/"
+fi
 cat > "$app/game/README.txt" <<EOF
 Splinter Cell: Blacklist for PS5 - put your own extracted Xbox 360 discs here: disc 1 (Campaign
 Part 1 & Multiplayer) in disc1/ and disc 2 (Campaign Part 2) in disc2/, each holding default.xex
@@ -139,6 +122,9 @@ gpu_allow_invalid_fetch_constants = true
 # default). Without it a 4x MSAA stencil clear (the silent kill's effect) claimed the whole EDRAM
 # and wiped the G-buffer: the world went black but for its lights, whole or half the screen.
 execute_unclipped_draw_vs_on_cpu = true
+# The Xbox button prompts drawn as PlayStation ones (ps5/assets/textures). To collect more of the
+# game's small textures: texture_dump_dir = "/app0/logs/textures"
+texture_replace_dir = "/app0/launcher/textures"
 # EDRAM through fragment shader interlock (Broken Bond needed it for black 3D in its story mode):
 # render_target_path_vulkan = "fsi"
 EOF

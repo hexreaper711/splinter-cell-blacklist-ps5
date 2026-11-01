@@ -26,6 +26,9 @@ namespace rex::graphics {
 // system page size granularity.
 class SharedMemory {
  public:
+  // [ps5 port] Guest memory, for the texture cache's replacement textures.
+  memory::Memory& guest_memory() const { return memory_; }
+
   static constexpr uint32_t kBufferSizeLog2 = 29;
   static constexpr uint32_t kBufferSize = 1 << kBufferSizeLog2;
 

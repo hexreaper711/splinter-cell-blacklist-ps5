@@ -41,6 +41,17 @@ if [[ -z $version ]]; then
 fi
 zip_name=splinter-cell-blacklist-ps5-$version.zip
 
+# ps5/package/sce_sys/param.json is in the repository (the store's checks read it at the release
+# tag): its contentVersion should be VERSION.txt's (0.1.1 is 00.001.001).
+if [[ $(tr -d '[:space:]' < VERSION.txt) =~ ^([0-9]+)\.([0-9]+)\.([0-9]+)$ ]]; then
+    expected=$(printf '%02d.%03d.%03d' "$((10#${BASH_REMATCH[1]}))" "$((10#${BASH_REMATCH[2]}))" \
+        "$((10#${BASH_REMATCH[3]}))")
+    if ! grep -q "\"contentVersion\": \"$expected\"" ps5/package/sce_sys/param.json; then
+        echo "warning: ps5/package/sce_sys/param.json's contentVersion isn't $expected" \
+            "(VERSION.txt $(tr -d '[:space:]' < VERSION.txt)): update it with the version" >&2
+    fi
+fi
+
 if (( clean )); then
     step "Removing the game build and the recompiled code"
     "${dev[@]}" bash -c 'rm -rf out/* generated/*'

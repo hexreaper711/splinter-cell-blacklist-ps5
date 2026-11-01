@@ -105,6 +105,8 @@ def main() -> int:
             if consts:
                 print(f"      {' '.join(consts)}")
             continue
+        if "gpu frame: rt " in line or "gpu frame: resolve reads" in line:
+            continue  # (the render target cache's ownership log)
         if "gpu frame: resolved" in line:
             print("        data " + line.split("gpu frame: resolved ")[1])
             continue
