@@ -35,6 +35,15 @@
 #include <rex/ps5_diag.h>
 #endif
 
+// [ps5 port] Games wait for a number of vblanks per frame (Splinter Cell: Blacklist 2, 30 fps at
+// 60 Hz): twice the vblanks, twice the frame rate, as long as the game's clock isn't counted in
+// vblanks (or what's counted runs faster).
+REXCVAR_DEFINE_INT32(guest_vblank_rate, 0, "GPU",
+                     "Guest vblanks a second (0: the video mode's, 60). 120 doubles the frame rate "
+                     "of a game waiting for vblanks - experimental")
+    .range(0, 240)
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+
 REXCVAR_DEFINE_STRING(swap_post_effect, "none", "GPU", "Swap post effect: none, fxaa, fxaa_extreme")
     .allowed({"none", "fxaa", "fxaa_extreme"})
     .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
@@ -166,6 +175,10 @@ X_STATUS GraphicsSystem::SetupGuestGpu(runtime::FunctionDispatcher* function_dis
           uint64_t current_time = chrono::Clock::QueryGuestTickCount();
           uint64_t interval_ticks =
               REXCVAR_GET(vsync) ? vsync_interval_ticks : no_vsync_interval_ticks;
+          if (REXCVAR_GET(vsync) && REXCVAR_GET(guest_vblank_rate) > 0) {
+            interval_ticks = std::max(
+                uint64_t(1), guest_tick_frequency / uint64_t(REXCVAR_GET(guest_vblank_rate)));
+          }
           while (current_time - last_frame_time >= interval_ticks) {
             MarkVblank();
             last_frame_time += interval_ticks;

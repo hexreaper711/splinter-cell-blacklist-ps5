@@ -47,6 +47,10 @@ const std::vector<Definition>& Definitions() {
       {"resolution_scale", "Resolution",
        "The Xbox drew at 720p. Sharper means much more work for the GPU.",
        {{"720p (Xbox)", "1"}, {"1440p", "2"}, {"4K", "3"}}},
+      {"guest_vblank_rate", "Frame rate",
+       "The Xbox ran the game at 30. 60 is experimental: smoother, but if anything moves too fast "
+       "or the game can't keep up, go back to 30.",
+       {{"30 (Xbox)", "0"}, {"60 (experimental)", "120"}}},
       {"async_shader_compilation", "New shaders",
        "Wait: a scene pauses the first time it needs a shader. Background: no pause, but things "
        "are missing until it's ready.",
