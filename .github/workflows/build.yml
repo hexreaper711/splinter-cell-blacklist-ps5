@@ -95,6 +95,8 @@ jobs:
         if: steps.version.outputs.new == 'true'
         env:
           DISC_FILES_DIR: ${{ vars.DISC_FILES_DIR }}
+          # (its own Docker volumes, not the ones of the owner's own checkout)
+          SCB_VOLUME_PREFIX: scbrunner
         run: |
           mkdir -p disc-files/disc1
           cp "$DISC_FILES_DIR/disc1/default.xex" disc-files/disc1/

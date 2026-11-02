@@ -22,6 +22,10 @@ enum Counter : int {
   kPipelines,           // Vulkan graphics pipelines created
   kPipelineUs,          // time spent creating them (all threads)
   kGpuWaitUs,           // time the GPU thread waited for the GPU to finish work
+  kGpuWaits,            // how many times
+  kGpuWaitMemexportUs,  // of that time: reading back what shaders wrote (visibility tests)
+  kGpuWaitResolveUs,    //   reading back resolves the game reads (exposure, visibility rows)
+  kGpuWaitQueryUs,      //   occlusion query results
   kSleeps,              // host sleeps (rex::thread::Sleep)
   kSleepOverUs,         // how much longer than asked they took, in all
   kCount
@@ -42,6 +46,14 @@ extern std::atomic<uint64_t> counters[kCount];
 // The reserved guest address space (all views live inside it).
 extern uintptr_t guest_arena_lo, guest_arena_hi;
 inline void Add(Counter c) { counters[c].fetch_add(1, std::memory_order_relaxed); }
+// What the GPU thread is waiting for the GPU for (kGpuWaitMemexportUs...): set around a wait with
+// GpuWaitReason, its time then counted there too. Anything else (frames in flight) is the rest.
+inline thread_local int gpu_wait_reason = -1;
+struct GpuWaitReason {
+  explicit GpuWaitReason(Counter reason) : previous(gpu_wait_reason) { gpu_wait_reason = reason; }
+  ~GpuWaitReason() { gpu_wait_reason = previous; }
+  int previous;
+};
 
 // Guest threads blocked in a kernel wait: one slot per host thread, filled on
 // entering XObject::Wait / WaitMultiple / SignalAndWait and cleared on leaving.
@@ -107,6 +119,11 @@ extern void (*title_exit_hook)();
 // a way out of the game when it has no "quit" of its own, or hangs (a thread of its own reads
 // the pads, not the game's input).
 void WatchLeaveGame(void (*hook)());
+// Calls hook (on a thread of its own) each time the buttons (ScePadData bits: L3 0x2, R3 0x4,
+// OPTIONS 0x8, D-pad up 0x10 / right 0x20 / down 0x40 / left 0x80, L2 0x100, R2 0x200, L1 0x400,
+// R1 0x800, triangle 0x1000, circle 0x2000, cross 0x4000, square 0x8000, touchpad 0x100000) are
+// all held together for hold_ms on any logged-in user's pad.
+void WatchButtonsHeld(uint32_t buttons, uint32_t hold_ms, const char* what, void (*hook)());
 uintptr_t Anchor();
 
 // The monitor thread (started by main): a stats line every 2 s (frame rate, vblanks, sound, new

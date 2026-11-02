@@ -172,6 +172,10 @@ class CommandProcessor {
 
   uint32_t ExecutePrimaryBuffer(uint32_t start_index, uint32_t end_index);
   virtual void OnPrimaryBufferEnd() {}
+  // [ps5 port] Copies GPU results queued for the guest CPU (deferred resolve readbacks) into guest
+  // memory: called wherever the GPU's progress becomes visible to the CPU (fence and event writes,
+  // interrupts, swaps, the read pointer), the only points it can look at them.
+  virtual void FlushPendingReadbacks() {}
   void ExecuteIndirectBuffer(uint32_t ptr, uint32_t length);
   bool ExecutePacket(memory::RingBuffer* reader);
   bool ExecutePacketType0(memory::RingBuffer* reader, uint32_t packet);

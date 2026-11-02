@@ -426,6 +426,7 @@ class VulkanCommandProcessor : public CommandProcessor {
 
   void ClearTransientDescriptorPools();
   bool IssueCopy_ReadbackResolvePath();
+  void FlushPendingReadbacks() override;
   bool IssueDraw_MemexportReadbackFullPath(uint32_t total_size);
   bool IssueDraw_MemexportReadbackFastPath(uint32_t total_size);
 
@@ -748,6 +749,22 @@ class VulkanCommandProcessor : public CommandProcessor {
   std::array<VertexBufferState, 96> vertex_buffer_states_{};
   uint64_t vertex_buffers_in_sync_[2] = {};
   std::unordered_map<uint64_t, ReadbackBuffer> readback_buffers_;
+  // [ps5 port] Resolve readbacks whose copy is recorded but not yet waited for, by readback buffer
+  // key (the latest of a key only: what the CPU would see at the next sync point).
+  struct PendingReadback {
+    uint32_t address;
+    uint32_t length;
+    uint32_t index;
+  };
+  std::unordered_map<uint64_t, PendingReadback> pending_resolve_readbacks_;
+  // [ps5 port] Occlusion queries ended but not yet waited for: their results go to the guest with
+  // the resolve readbacks (FlushPendingReadbacks), not with a wait each (24+ a frame for the lens
+  // flares).
+  struct PendingOcclusionQuery {
+    uint32_t sample_count_address;
+    uint32_t host_index;
+  };
+  std::vector<PendingOcclusionQuery> pending_occlusion_queries_;
   std::unordered_map<uint64_t, ReadbackBuffer> memexport_readback_buffers_;
 
   // The current dynamic state of the graphics pipeline bind point. Note that

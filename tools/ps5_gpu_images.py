@@ -87,7 +87,7 @@ def main() -> int:
                 v = [max(0.0, half(c)) for c in ch] if fmt == 31 else [float(c) for c in ch]
                 values.append((v[0], v[1], 0.0))
             else:
-                values.append(tuple(float(b) for b in p[1:4]))  # (byte order: try and see)
+                values.append((float(p[2]), float(p[1]), float(p[0])))  # (B, G, R, A in memory)
         # Scaled to the 99th percentile, not the maximum: a few bright lights would leave
         # everything else in an HDR picture black.
         brightest = sorted(max(v) for v in values)

@@ -63,6 +63,20 @@ REXCVAR_DEFINE_BOOL(vulkan_readback_resolve, false, "GPU/Vulkan",
                     "Read render-to-texture results on the CPU")
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
+// [ps5 port] One wait for all the resolve readbacks since the last point the guest CPU could see
+// the GPU's progress (a fence, an interrupt, a swap), not one each: ~80 waits a frame were a fifth
+// of all the time at 720p, two fifths at 1440p.
+REXCVAR_DEFINE_BOOL(readback_resolve_deferred, true, "GPU",
+                    "Resolve readbacks (small / full): copy into guest memory at the next point the "
+                    "game can see the GPU's progress, waiting once for all of them")
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+
+// [ps5 port] Occlusion query results handed to the guest at the next sync point too, not after a
+// wait each.
+REXCVAR_DEFINE_BOOL(occlusion_query_deferred, true, "GPU",
+                    "Occlusion query results: written with the deferred readbacks, waiting once")
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+
 REXCVAR_DEFINE_BOOL(vulkan_readback_memexport, false, "GPU/Vulkan",
                     "Read data written by memory export in shaders on the CPU")
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
@@ -3823,12 +3837,20 @@ bool VulkanCommandProcessor::IssueDraw(xenos::PrimitiveType prim_type, uint32_t 
   const RegisterFile& regs = *register_file_;
   (void)index_buffer_info;
   auto draw_fail = [&](const char* stage) {
+    // [ps5 port] The first 20, then every 1000th: a failure repeated every draw (270,000 of them)
+    // rotated the log until its cause, logged once before, was gone.
+    static uint64_t draw_failures = 0;
+    ++draw_failures;
+    if (draw_failures > 20 && draw_failures % 1000) {
+      return false;
+    }
     auto vgt_draw_initiator = regs.Get<reg::VGT_DRAW_INITIATOR>();
     REXGPU_ERROR(
-        "Vulkan IssueDraw failed at {} "
+        "Vulkan IssueDraw failed at {} ({} so far) "
         "(prim_type={}, index_count={}, source_select={}, major_mode={}, explicit_major={}, "
         "path_select={}, tess_mode={}, edram_mode={})",
-        stage, uint32_t(prim_type), index_count, uint32_t(vgt_draw_initiator.source_select),
+        stage, draw_failures, uint32_t(prim_type), index_count,
+        uint32_t(vgt_draw_initiator.source_select),
         uint32_t(vgt_draw_initiator.major_mode), uint32_t(major_mode_explicit),
         uint32_t(regs.Get<reg::VGT_OUTPUT_PATH_CNTL>().path_select),
         uint32_t(regs.Get<reg::VGT_HOS_CNTL>().tess_mode),
@@ -4424,6 +4446,9 @@ bool VulkanCommandProcessor::IssueDraw(xenos::PrimitiveType prim_type, uint32_t 
 }
 
 bool VulkanCommandProcessor::IssueDraw_MemexportReadbackFullPath(uint32_t total_size) {
+#if REX_PLATFORM_PS5
+  rex::ps5diag::GpuWaitReason wait_reason(rex::ps5diag::kGpuWaitMemexportUs);
+#endif
   if (!total_size || memexport_ranges_.empty()) {
     return true;
   }
@@ -4507,6 +4532,9 @@ bool VulkanCommandProcessor::IssueDraw_MemexportReadbackFullPath(uint32_t total_
 }
 
 bool VulkanCommandProcessor::IssueDraw_MemexportReadbackFastPath(uint32_t total_size) {
+#if REX_PLATFORM_PS5
+  rex::ps5diag::GpuWaitReason wait_reason(rex::ps5diag::kGpuWaitMemexportUs);
+#endif
   if (!total_size || memexport_ranges_.empty()) {
     return true;
   }
@@ -4658,6 +4686,9 @@ bool VulkanCommandProcessor::IssueCopy() {
 }
 
 bool VulkanCommandProcessor::IssueCopy_ReadbackResolvePath() {
+#if REX_PLATFORM_PS5
+  rex::ps5diag::GpuWaitReason wait_reason(rex::ps5diag::kGpuWaitResolveUs);
+#endif
   const ui::vulkan::VulkanDevice* const vulkan_device = GetVulkanDevice();
   const ui::vulkan::VulkanDevice::Functions& dfn = vulkan_device->functions();
   const VkDevice device = vulkan_device->device();
@@ -4745,6 +4776,12 @@ bool VulkanCommandProcessor::IssueCopy_ReadbackResolvePath() {
   readback.last_used_frame = frame_current_;
   uint32_t write_index = readback.current_index;
   uint32_t readback_size = AlignReadbackBufferSize(written_length);
+  if (!pending_resolve_readbacks_.empty() &&
+      (readback.buffers[write_index] == VK_NULL_HANDLE ||
+       readback_size > readback.sizes[write_index])) {
+    // (a new or bigger buffer is made after waiting, destroying the old one: copy out what's queued)
+    FlushPendingReadbacks();
+  }
   if (!ensure_readback_slot(readback, write_index, readback_size)) {
     return true;
   }
@@ -4918,6 +4955,16 @@ bool VulkanCommandProcessor::IssueCopy_ReadbackResolvePath() {
 
   bool use_delayed_sync =
       readback_mode == ReadbackResolveMode::kFast || readback_mode == ReadbackResolveMode::kSome;
+  bool deferred = !use_delayed_sync && REXCVAR_GET(readback_resolve_deferred);
+#if REX_PLATFORM_PS5
+  // (a frame report logs each resolve's data as it happens)
+  deferred = deferred && !gpu_frame_report.recording;
+#endif
+  if (deferred) {
+    pending_resolve_readbacks_[resolve_key] = {written_address, written_length, write_index};
+    readback.current_index = 1 - readback.current_index;
+    return true;
+  }
   uint32_t read_index = write_index;
   if (use_delayed_sync) {
     read_index = 1 - write_index;
@@ -4961,10 +5008,74 @@ bool VulkanCommandProcessor::IssueCopy_ReadbackResolvePath() {
   return true;
 }
 
+void VulkanCommandProcessor::FlushPendingReadbacks() {
+  if (pending_resolve_readbacks_.empty() && pending_occlusion_queries_.empty()) {
+    return;
+  }
+#if REX_PLATFORM_PS5
+  rex::ps5diag::GpuWaitReason wait_reason(rex::ps5diag::kGpuWaitResolveUs);
+#endif
+  if (!AwaitAllQueueOperationsCompletion()) {
+    pending_resolve_readbacks_.clear();
+    pending_occlusion_queries_.clear();
+    return;
+  }
+  const ui::vulkan::VulkanDevice* const vulkan_device = GetVulkanDevice();
+  const ui::vulkan::VulkanDevice::Functions& dfn = vulkan_device->functions();
+  const VkDevice device = vulkan_device->device();
+  if (!pending_occlusion_queries_.empty() && occlusion_query_readback_mapping_) {
+    if (!(vulkan_device->memory_types().host_coherent &
+          (uint32_t(1) << occlusion_query_readback_memory_type_))) {
+      VkMappedMemoryRange memory_range = {};
+      memory_range.sType = VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE;
+      memory_range.memory = occlusion_query_readback_memory_;
+      memory_range.offset = 0;
+      memory_range.size =
+          std::min(rex::round_up(VkDeviceSize(sizeof(uint64_t) * kMaxOcclusionQueries),
+                                 vulkan_device->properties().nonCoherentAtomSize),
+                   occlusion_query_readback_memory_size_);
+      dfn.vkInvalidateMappedMemoryRanges(device, 1, &memory_range);
+    }
+    const uint64_t* results =
+        reinterpret_cast<const uint64_t*>(occlusion_query_readback_mapping_);
+    for (const PendingOcclusionQuery& query : pending_occlusion_queries_) {
+      WriteGuestOcclusionResult(query.sample_count_address,
+                                NormalizeOcclusionSamples(results[query.host_index]));
+    }
+  }
+  pending_occlusion_queries_.clear();
+  for (const auto& [key, pending] : pending_resolve_readbacks_) {
+    auto it = readback_buffers_.find(key);
+    if (it == readback_buffers_.end()) {
+      continue;
+    }
+    const ReadbackBuffer& readback = it->second;
+    if (readback.buffers[pending.index] == VK_NULL_HANDLE ||
+        readback.mapped_data[pending.index] == nullptr ||
+        pending.length > readback.sizes[pending.index]) {
+      continue;
+    }
+    VkMappedMemoryRange readback_memory_range = {};
+    readback_memory_range.sType = VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE;
+    readback_memory_range.memory = readback.memories[pending.index];
+    readback_memory_range.offset = 0;
+    readback_memory_range.size = VK_WHOLE_SIZE;
+    dfn.vkInvalidateMappedMemoryRanges(device, 1, &readback_memory_range);
+    if (uint8_t* destination = memory_->TranslatePhysical(pending.address)) {
+      std::memcpy(destination, readback.mapped_data[pending.index], pending.length);
+    }
+  }
+  pending_resolve_readbacks_.clear();
+}
+
 void VulkanCommandProcessor::EvictOldReadbackBuffers(
     std::unordered_map<uint64_t, ReadbackBuffer>& buffer_map) {
   if (buffer_map.empty()) {
     return;
+  }
+  if (&buffer_map == &readback_buffers_) {
+    // (queued readbacks use these buffers)
+    FlushPendingReadbacks();
   }
 
   const uint64_t eviction_frame_floor = (frame_current_ > kReadbackBufferEvictionAgeFrames)
@@ -5099,6 +5210,7 @@ void VulkanCommandProcessor::DisableHostOcclusionQueries() {
   active_occlusion_query_ = {};
   occlusion_query_cursor_ = 0;
   occlusion_query_resources_available_ = false;
+  pending_occlusion_queries_.clear();
 }
 
 bool VulkanCommandProcessor::BeginGuestOcclusionQuery(uint32_t sample_count_address) {
@@ -5133,6 +5245,9 @@ bool VulkanCommandProcessor::BeginGuestOcclusionQuery(uint32_t sample_count_addr
 }
 
 bool VulkanCommandProcessor::EndGuestOcclusionQuery(uint32_t sample_count_address) {
+#if REX_PLATFORM_PS5
+  rex::ps5diag::GpuWaitReason wait_reason(rex::ps5diag::kGpuWaitQueryUs);
+#endif
   if (!REXCVAR_GET(occlusion_query_enable) || !occlusion_query_resources_available_ ||
       !active_occlusion_query_.valid || occlusion_query_pool_ == VK_NULL_HANDLE ||
       occlusion_query_readback_mapping_ == nullptr) {
@@ -5154,6 +5269,12 @@ bool VulkanCommandProcessor::EndGuestOcclusionQuery(uint32_t sample_count_addres
                                            occlusion_query_readback_buffer_,
                                            sizeof(uint64_t) * host_index, sizeof(uint64_t),
                                            VK_QUERY_RESULT_64_BIT | VK_QUERY_RESULT_WAIT_BIT);
+
+  if (REXCVAR_GET(occlusion_query_deferred)) {
+    // (the slot isn't reused before the flush: 8192 slots, a flush at least every primary buffer)
+    pending_occlusion_queries_.push_back({sample_count_address, host_index});
+    return true;
+  }
 
   if (!EndSubmission(false)) {
     return false;
@@ -5249,10 +5370,15 @@ void VulkanCommandProcessor::CheckSubmissionFenceAndDeviceLoss(uint64_t await_su
         dfn.vkWaitForFences(device, uint32_t(await_submission - submission_completed_),
                             submissions_in_flight_fences_.data(), VK_TRUE, UINT64_MAX);
 #if REX_PLATFORM_PS5
-    rex::ps5diag::counters[rex::ps5diag::kGpuWaitUs].fetch_add(
-        (rex::chrono::Clock::QueryHostTickCount() - wait_start) * 1000000 /
-            rex::chrono::Clock::QueryHostTickFrequency(),
-        std::memory_order_relaxed);
+    const uint64_t waited_us = (rex::chrono::Clock::QueryHostTickCount() - wait_start) * 1000000 /
+                               rex::chrono::Clock::QueryHostTickFrequency();
+    rex::ps5diag::counters[rex::ps5diag::kGpuWaitUs].fetch_add(waited_us,
+                                                             std::memory_order_relaxed);
+    rex::ps5diag::Add(rex::ps5diag::kGpuWaits);
+    if (rex::ps5diag::gpu_wait_reason >= 0) {
+      rex::ps5diag::counters[rex::ps5diag::gpu_wait_reason].fetch_add(waited_us,
+                                                                     std::memory_order_relaxed);
+    }
 #endif
     if (wait_result == VK_SUCCESS) {
       fences_awaited += await_submission - submission_completed_;

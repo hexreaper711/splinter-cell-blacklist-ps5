@@ -101,10 +101,10 @@ void RestartApp(const char* why) {
   _exit(0);
 }
 
-void WatchLeaveGame(void (*hook)()) {
-  std::thread([hook] {
-    RegisterThread("leave game watch");
-    constexpr uint32_t kOptions = 0x00000008u, kTouchpad = 0x00100000u;
+void WatchButtonsHeld(uint32_t buttons_needed, uint32_t hold_ms, const char* what,
+                      void (*hook)()) {
+  std::thread([buttons_needed, hold_ms, what, hook] {
+    RegisterThread(what);
     uint64_t held_since = 0;
     for (;;) {
       std::this_thread::sleep_for(std::chrono::milliseconds(100));
@@ -120,20 +120,25 @@ void WatchLeaveGame(void (*hook)()) {
           if (handle >= 0 && scePadReadState(handle, data) == 0) {
             std::memcpy(&buttons, data, sizeof(buttons));
           }
-          held |= (buttons & (kOptions | kTouchpad)) == (kOptions | kTouchpad);
+          held |= (buttons & buttons_needed) == buttons_needed;
         }
       }
       if (!held) {
         held_since = 0;
       } else if (!held_since) {
         held_since = NowMs();
-      } else if (NowMs() - held_since >= 2000) {
-        REXLOG_INFO("OPTIONS + touchpad held: leaving the game");
+      } else if (NowMs() - held_since >= hold_ms) {
+        REXLOG_INFO("{} held", what);
         hook();
         held_since = 0;
       }
     }
   }).detach();
+}
+
+void WatchLeaveGame(void (*hook)()) {
+  // OPTIONS + touchpad for 2 s: leaving the game.
+  WatchButtonsHeld(0x00000008u | 0x00100000u, 2000, "OPTIONS + touchpad", hook);
 }
 
 namespace {
@@ -705,6 +710,14 @@ void StartMonitor() {
           d[kSleeps] ? double(d[kSleepOverUs]) / double(d[kSleeps]) : 0.0, gaps[kSleepOver] / 1000.0);
       REXLOG_INFO("ps5 pacing: frames lasting 1 vblank {}, 2 {}, 3 {}, 4+ {}", paced[0], paced[1],
                   paced[2], paced[3]);
+      REXLOG_INFO(
+          "ps5 gpu waits: {:.0f} a second; of the time, visibility readbacks {:.0f}%, resolve "
+          "readbacks {:.0f}%, occlusion queries {:.0f}%, other (frames in flight) {:.0f}%",
+          d[kGpuWaits] / seconds, d[kGpuWaitMemexportUs] / 10000.0 / seconds,
+          d[kGpuWaitResolveUs] / 10000.0 / seconds, d[kGpuWaitQueryUs] / 10000.0 / seconds,
+          (d[kGpuWaitUs] - std::min(d[kGpuWaitUs], d[kGpuWaitMemexportUs] + d[kGpuWaitResolveUs] +
+                                                       d[kGpuWaitQueryUs])) /
+              10000.0 / seconds);
     }
   }).detach();
 }

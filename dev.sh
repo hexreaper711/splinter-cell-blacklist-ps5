@@ -7,7 +7,8 @@
 # signer) at /work/ps5-plume-triangle. Dependencies and build trees live on Docker volumes
 # (scbps5-*): a Linux filesystem, faster than the shared Mac folder, where tar and git archive
 # also break. With SCB_STORAGE_DIR set they are folders in it instead (the GitHub check caches
-# them between runs).
+# them between runs). SCB_VOLUME_PREFIX names the volumes (scbps5): another checkout on the same
+# Mac (the release runner's) uses its own, or their build trees mix.
 set -euo pipefail
 
 here=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
@@ -24,7 +25,7 @@ store() {  # a Docker volume, or a folder in SCB_STORAGE_DIR
         mkdir -p "$SCB_STORAGE_DIR/$1"
         echo "$SCB_STORAGE_DIR/$1"
     else
-        echo "scbps5-$1"
+        echo "${SCB_VOLUME_PREFIX:-scbps5}-$1"
     fi
 }
 mounts=(-v "$here:/work/scb" -v "$(store cache):/cache"

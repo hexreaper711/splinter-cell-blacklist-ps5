@@ -251,7 +251,10 @@ void CommandProcessor::WorkerThreadMain() {
     assert_true(read_ptr_index_ != write_ptr_index);
 
     // Execute. Note that we handle wraparound transparently.
-    read_ptr_index_ = ExecutePrimaryBuffer(read_ptr_index_, write_ptr_index);
+    const uint32_t new_read_ptr_index = ExecutePrimaryBuffer(read_ptr_index_, write_ptr_index);
+    // (before the CPU can see the progress, through the register or the writeback)
+    FlushPendingReadbacks();
+    read_ptr_index_ = new_read_ptr_index;
 
     // TODO(benvanik): use reader->Read_update_freq_ and only issue after moving
     //     that many indices.
@@ -924,6 +927,7 @@ bool CommandProcessor::ExecutePacketType3_NOP(memory::RingBuffer* reader, uint32
 
 bool CommandProcessor::ExecutePacketType3_INTERRUPT(memory::RingBuffer* reader, uint32_t packet,
                                                     uint32_t count) {
+  FlushPendingReadbacks();
   SCOPE_profile_cpu_f("gpu");
 
   // generate interrupt from the command stream
@@ -940,6 +944,7 @@ bool CommandProcessor::ExecutePacketType3_INTERRUPT(memory::RingBuffer* reader, 
 
 bool CommandProcessor::ExecutePacketType3_XE_SWAP(memory::RingBuffer* reader, uint32_t packet,
                                                   uint32_t count) {
+  FlushPendingReadbacks();
   SCOPE_profile_cpu_f("gpu");
 
 #ifdef REXGLUE_ENABLE_PERF_COUNTERS
@@ -1095,6 +1100,7 @@ bool CommandProcessor::ExecutePacketType3_REG_RMW(memory::RingBuffer* reader, ui
 
 bool CommandProcessor::ExecutePacketType3_REG_TO_MEM(memory::RingBuffer* reader, uint32_t packet,
                                                      uint32_t count) {
+  FlushPendingReadbacks();
   // Copy Register to Memory (?)
   // Count is 2, assuming a Register Addr and a Memory Addr.
 
@@ -1113,6 +1119,7 @@ bool CommandProcessor::ExecutePacketType3_REG_TO_MEM(memory::RingBuffer* reader,
 
 bool CommandProcessor::ExecutePacketType3_MEM_WRITE(memory::RingBuffer* reader, uint32_t packet,
                                                     uint32_t count) {
+  FlushPendingReadbacks();
   uint32_t write_addr = reader->ReadAndSwap<uint32_t>();
   for (uint32_t i = 0; i < count - 1; i++) {
     uint32_t write_data = reader->ReadAndSwap<uint32_t>();
@@ -1129,6 +1136,7 @@ bool CommandProcessor::ExecutePacketType3_MEM_WRITE(memory::RingBuffer* reader, 
 
 bool CommandProcessor::ExecutePacketType3_COND_WRITE(memory::RingBuffer* reader, uint32_t packet,
                                                      uint32_t count) {
+  FlushPendingReadbacks();
   // conditional write to memory or register
   uint32_t wait_info = reader->ReadAndSwap<uint32_t>();
   uint32_t poll_reg_addr = reader->ReadAndSwap<uint32_t>();
@@ -1192,6 +1200,7 @@ bool CommandProcessor::ExecutePacketType3_COND_WRITE(memory::RingBuffer* reader,
 
 bool CommandProcessor::ExecutePacketType3_EVENT_WRITE(memory::RingBuffer* reader, uint32_t packet,
                                                       uint32_t count) {
+  FlushPendingReadbacks();
   // generate an event that creates a write to memory when completed
   uint32_t initiator = reader->ReadAndSwap<uint32_t>();
   // Writeback initiator.
@@ -1208,6 +1217,7 @@ bool CommandProcessor::ExecutePacketType3_EVENT_WRITE(memory::RingBuffer* reader
 
 bool CommandProcessor::ExecutePacketType3_EVENT_WRITE_SHD(memory::RingBuffer* reader,
                                                           uint32_t packet, uint32_t count) {
+  FlushPendingReadbacks();
   // generate a VS|PS_done event
   uint32_t initiator = reader->ReadAndSwap<uint32_t>();
   uint32_t address = reader->ReadAndSwap<uint32_t>();
@@ -1232,6 +1242,7 @@ bool CommandProcessor::ExecutePacketType3_EVENT_WRITE_SHD(memory::RingBuffer* re
 
 bool CommandProcessor::ExecutePacketType3_EVENT_WRITE_EXT(memory::RingBuffer* reader,
                                                           uint32_t packet, uint32_t count) {
+  FlushPendingReadbacks();
   // generate a screen extent event
   uint32_t initiator = reader->ReadAndSwap<uint32_t>();
   uint32_t address = reader->ReadAndSwap<uint32_t>();
@@ -1392,7 +1403,9 @@ bool CommandProcessor::ExecutePacketType3Draw(memory::RingBuffer* reader, uint32
           xenos::IsMajorModeExplicit(vgt_draw_initiator.major_mode, vgt_draw_initiator.prim_type);
       draw_succeeded = IssueDraw(vgt_draw_initiator.prim_type, vgt_draw_initiator.num_indices,
                                  is_indexed ? &index_buffer_info : nullptr, major_mode_explicit);
-      if (!draw_succeeded) {
+      // [ps5 port] (the first 20 failures, then every 1000th: see the backend's own message)
+      static uint64_t backend_failures = 0;
+      if (!draw_succeeded && (++backend_failures <= 20 || backend_failures % 1000 == 0)) {
         auto vgt_output_path_cntl = register_file_->Get<reg::VGT_OUTPUT_PATH_CNTL>();
         auto vgt_hos_cntl = register_file_->Get<reg::VGT_HOS_CNTL>();
         auto rb_modecontrol = register_file_->Get<reg::RB_MODECONTROL>();

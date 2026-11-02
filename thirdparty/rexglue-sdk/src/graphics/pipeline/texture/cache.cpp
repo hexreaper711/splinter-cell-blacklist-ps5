@@ -33,17 +33,17 @@
 #include <rex/logging.h>
 #include <rex/math.h>
 
-// [ps5 port] Texture replacement, for small compressed (DXT) textures (128x128 or less: icons,
-// button prompts): matched by a hash (FNV-1a 64) of their bytes as the guest has them (tiled, its
+// [ps5 port] Texture replacement, for small compressed (DXT) textures (256x256 or less: icons,
+// button prompts, lens flares): matched by a hash (FNV-1a 64) of their bytes as the guest has them (tiled, its
 // endianness), replaced by bytes of the same size before they reach the GPU. texture_dump_dir
 // collects the originals.
 REXCVAR_DEFINE_STRING(texture_dump_dir, "", "GPU",
-                      "Save each small texture (128x128 or less) the game loads, once, to this folder "
+                      "Save each small texture (256x256 or less) the game loads, once, to this folder "
                       "as <hash>_<width>x<height>_f<format>.raw (the guest's bytes)")
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 REXCVAR_DEFINE_STRING(texture_replace_dir, "", "GPU",
-                      "Folder of <hash>.raw files: a small texture whose bytes have that hash gets "
-                      "the file's bytes (the same size) instead");
+                      "Folders (separated by ;) of <hash>.raw files: a small texture whose bytes "
+                      "have that hash gets the file's bytes (the same size) instead");
 
 REXCVAR_DEFINE_INT32(texture_cache_memory_limit_render_to_texture, 24, "GPU",
                      "Texture cache memory limit for render-to-texture (MB)")
@@ -404,16 +404,29 @@ void DumpOrReplaceSmallTexture(memory::Memory& memory, uint32_t address, uint32_
   static std::unordered_set<uint64_t> dumped;
   if (!replacements_loaded) {
     replacements_loaded = true;
-    const std::string dir = REXCVAR_GET(texture_replace_dir);
-    std::error_code ec;
-    if (!dir.empty()) {
+    const std::string dirs = REXCVAR_GET(texture_replace_dir);
+    size_t start = 0;
+    while (start < dirs.size()) {
+      size_t end = dirs.find(';', start);
+      if (end == std::string::npos) {
+        end = dirs.size();
+      }
+      const std::string dir = dirs.substr(start, end - start);
+      start = end + 1;
+      if (dir.empty()) {
+        continue;
+      }
+      size_t count = 0;
+      std::error_code ec;
       for (const auto& entry : std::filesystem::directory_iterator(dir, ec)) {
         const std::string stem = entry.path().stem().string();
         if (entry.path().extension() == ".raw" && stem.size() >= 16) {
-          replacements.emplace(std::stoull(stem.substr(0, 16), nullptr, 16), entry.path());
+          // (a later folder's file wins over an earlier one's)
+          replacements[std::stoull(stem.substr(0, 16), nullptr, 16)] = entry.path();
+          ++count;
         }
       }
-      REXGPU_INFO("Texture replacement: {} textures in {}", replacements.size(), dir);
+      REXGPU_INFO("Texture replacement: {} textures in {}", count, dir);
     }
   }
   const std::string dump_dir = REXCVAR_GET(texture_dump_dir);
@@ -489,7 +502,7 @@ bool TextureCache::PrepareTextureLoad(Texture& texture, PendingTextureLoad& pend
   // change every frame - hashing and dumping them each time stalled the game)
   if (base_outdated && !texture_key.scaled_resolve &&
       texture_key.dimension == xenos::DataDimension::k2DOrStacked &&
-      texture_key.width_minus_1 < 128 && texture_key.height_minus_1 < 128 &&
+      texture_key.width_minus_1 < 256 && texture_key.height_minus_1 < 256 &&
       (texture_key.format == xenos::TextureFormat::k_DXT1 ||
        texture_key.format == xenos::TextureFormat::k_DXT2_3 ||
        texture_key.format == xenos::TextureFormat::k_DXT4_5)) {

@@ -51,6 +51,11 @@ const std::vector<Definition>& Definitions() {
        "The Xbox ran the game at 30. 60 is experimental: smoother, but if anything moves too fast "
        "or the game can't keep up, go back to 30.",
        {{"30 (Xbox)", "0"}, {"60 (experimental)", "120"}}},
+      {"texture_replace_dir", "Lens flare halo",
+       "The big rainbow ring the lens flare draws when you face a bright light. Off removes the "
+       "ring; the glow stays.",
+       {{"On", "/app0/launcher/textures"},
+        {"Off", "/app0/launcher/textures;/app0/launcher/textures-no-halo"}}},
       {"async_shader_compilation", "New shaders",
        "Wait: a scene pauses the first time it needs a shader. Background: no pause, but things "
        "are missing until it's ready.",
@@ -65,9 +70,9 @@ const std::vector<Definition>& Definitions() {
        "hands them over at once; Fast a frame late, so things pop in and out.",
        {{"Exact", "false"}, {"Fast", "true"}}},
       {"occlusion_query_enable", "Occlusion queries",
-       "On asks the GPU what's hidden so the game can skip it; its answers made things vanish. "
-       "Off draws everything.",
-       {{"Off", "false"}, {"On", "true"}}},
+       "On asks the GPU how much of each light is visible, for its lens flare. Off says all of "
+       "it: flares and glare everywhere, even indoors and through walls.",
+       {{"On", "true"}, {"Off", "false"}}},
       {"vsync", "V-Sync", "Off only to test: the picture may tear.",
        {{"On", "true"}, {"Off", "false"}}},
   };

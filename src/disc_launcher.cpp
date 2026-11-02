@@ -301,7 +301,7 @@ void DiscLauncherDialog::OnDraw(ImGuiIO& io) {
 
   // Settings: a row each, the choice on the right between arrows.
   if (settings_page_) {
-    const float row_h = 52.0f * s;  // (13 rows above the help line)
+    const float row_h = 48.0f * s;  // (14 rows above the help line)
     for (size_t i = 0; i < settings_.settings.size(); ++i) {
       const auto& setting = settings_.settings[i];
       const bool selected = i == setting_row_;

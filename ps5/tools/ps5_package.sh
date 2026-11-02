@@ -98,6 +98,10 @@ mkdir -p "$app/launcher/textures"
 if compgen -G "$ps5dir/assets/textures/*.raw" > /dev/null; then
     cp "$ps5dir"/assets/textures/*.raw "$app/launcher/textures/"
 fi
+# The lens flare's halo ring blanked: added to texture_replace_dir by the launcher's Lens flare
+# halo Off.
+mkdir -p "$app/launcher/textures-no-halo"
+cp "$ps5dir"/assets/textures-no-halo/*.raw "$app/launcher/textures-no-halo/"
 cat > "$app/game/README.txt" <<EOF
 Splinter Cell: Blacklist for PS5 - put your own extracted Xbox 360 discs here: disc 1 (Campaign
 Part 1 & Multiplayer) in disc1/ and disc 2 (Campaign Part 2) in disc2/, each holding default.xex
@@ -109,7 +113,7 @@ EOF
 # Saves go to /app0/UserData/blacklist (both discs share them), the log to /app0/logs.
 cat > "$app/blacklist.toml" <<'EOF'
 gpu_plugin = "xenos"
-occlusion_query_enable = false
+occlusion_query_enable = true
 log_level = "info"
 # Wait for a new shader instead of drawing without it: with background compiling, scenes went
 # black for seconds while their shaders compiled (the PC port did the same). Compiled shaders are
